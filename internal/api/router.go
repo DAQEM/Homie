@@ -177,17 +177,18 @@ func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		WorkspaceID uuid.UUID  `json:"workspace_id"`
-		ParentID    *uuid.UUID `json:"parent_id"`
-		SortOrder   int32      `json:"sort_order"`
-		GridX       int32      `json:"grid_x"`
-		GridY       int32      `json:"grid_y"`
-		Title       string     `json:"title"`
-		Icon        *string    `json:"icon"`
-		NodeType    string     `json:"node_type"`
-		URL         *string    `json:"url"`
-		Width       int32      `json:"width"`
-		Height      int32      `json:"height"`
+		WorkspaceID uuid.UUID       `json:"workspace_id"`
+		ParentID    *uuid.UUID      `json:"parent_id"`
+		SortOrder   int32           `json:"sort_order"`
+		GridX       int32           `json:"grid_x"`
+		GridY       int32           `json:"grid_y"`
+		Title       string          `json:"title"`
+		Icon        *string         `json:"icon"`
+		NodeType    string          `json:"node_type"`
+		URL         *string         `json:"url"`
+		Width       int32           `json:"width"`
+		Height      int32           `json:"height"`
+		Settings    json.RawMessage `json:"settings"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
@@ -195,7 +196,7 @@ func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if input.NodeType == "container" {
+	if input.NodeType != "action" {
 		input.Icon = nil
 		input.URL = nil
 	} else if input.Icon != nil && len(*input.Icon) > maxCustomIconLength {
@@ -208,9 +209,13 @@ func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 		input.Height = 1
 	}
 	if input.ParentID == nil {
-		input.GridX, input.GridY, input.Width, input.Height = clampNodeToBlock(
+		input.GridX, input.GridY, input.Width, input.Height = clampNodeToGrid(
 			input.GridX, input.GridY, input.Width, input.Height,
 		)
+	}
+
+	if len(input.Settings) == 0 {
+		input.Settings = json.RawMessage(`{}`)
 	}
 
 	node := models.Node{
@@ -225,6 +230,7 @@ func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 		URL:         input.URL,
 		Width:       input.Width,
 		Height:      input.Height,
+		Settings:    input.Settings,
 	}
 
 	if err := s.db.WithContext(r.Context()).Create(&node).Error; err != nil {
@@ -304,12 +310,19 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if node.NodeType == "container" {
+	if node.NodeType != "action" {
 		patch["icon"] = nil
 		patch["url"] = nil
 	} else if iconStr, ok := patch["icon"].(string); ok && len(iconStr) > maxCustomIconLength {
 		http.Error(w, "custom icon file is too large (max 100KB)", http.StatusBadRequest)
 		return
+	}
+
+	if rawSettings, ok := patch["settings"]; ok {
+		b, err := json.Marshal(rawSettings)
+		if err == nil {
+			patch["settings"] = json.RawMessage(b)
+		}
 	}
 
 	if err := s.db.WithContext(r.Context()).Model(&node).Updates(patch).Error; err != nil {
@@ -427,58 +440,36 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func clampNodeToBlock(x, y, w, h int32) (int32, int32, int32, int32) {
+func clampNodeToGrid(x, y, w, h int32) (int32, int32, int32, int32) {
 	if x == -1 && y == -1 {
 		return -1, -1, 1, 1
 	}
 	const (
-		blockCols = int32(3)
-		blockRows = int32(4)
-		gridCols  = int32(12) // 4 blocks wide
-		gridRows  = int32(8)  // 2 blocks high (8 blocks total)
+		gridCols = int32(16)
+		gridRows = int32(8)
 	)
 
 	if w < 1 {
 		w = 1
-	} else if w > blockCols {
-		w = blockCols
+	} else if w > gridCols {
+		w = gridCols
 	}
 	if h < 1 {
 		h = 1
-	} else if h > blockRows {
-		h = blockRows
+	} else if h > gridRows {
+		h = gridRows
 	}
 
 	if x < 1 {
 		x = 1
-	} else if x > gridCols {
-		x = gridCols
+	} else if x+w-1 > gridCols {
+		x = gridCols - w + 1
 	}
 	if y < 1 {
 		y = 1
-	} else if y > gridRows {
-		y = gridRows
+	} else if y+h-1 > gridRows {
+		y = gridRows - h + 1
 	}
 
-	bx := (x - 1) / blockCols
-	by := (y - 1) / blockRows
-
-	blockMinX := bx*blockCols + 1
-	blockMaxX := (bx + 1) * blockCols
-	blockMinY := by*blockRows + 1
-	blockMaxY := (by + 1) * blockRows
-
-	if x < blockMinX {
-		x = blockMinX
-	}
-	if x+w-1 > blockMaxX {
-		x = blockMaxX - w + 1
-	}
-	if y < blockMinY {
-		y = blockMinY
-	}
-	if y+h-1 > blockMaxY {
-		y = blockMaxY - h + 1
-	}
 	return x, y, w, h
 }

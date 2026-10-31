@@ -4,21 +4,28 @@ import type {
   DashboardNode,
   DragEndEventPayload,
   NodeModalState,
+  NodeSettings,
+  NodeType,
   SignalDelta,
   Workspace,
 } from "../types";
 
-const STORAGE_KEY = "homie_snapshot_v6";
-const ETAG_KEY = "homie_etag_v6";
+const STORAGE_KEY = "homie_snapshot_v7";
+const ETAG_KEY = "homie_etag_v7";
 const WORKSPACE_STORAGE_KEY = "homie_active_workspace_id";
 
-export const BLOCK_COLS = 3;
-export const BLOCK_ROWS = 4;
-export const BLOCKS_X = 4; // 4 blocks per row
-export const BLOCKS_Y = 2; // 2 rows of blocks (8 blocks total)
-export const GRID_COLS = BLOCKS_X * BLOCK_COLS; // 12
-export const GRID_ROWS = BLOCKS_Y * BLOCK_ROWS; // 8
+export const GRID_COLS = 16;
+export const GRID_ROWS = 8;
 export const MAX_ICON_BYTES = 100 * 1024; // 100 KB
+
+export const DEFAULT_NODE_SIZES: Record<NodeType, { w: number; h: number }> = {
+  action: { w: 1, h: 1 },
+  container: { w: 4, h: 2 },
+  clock: { w: 2, h: 2 },
+  search: { w: 8, h: 1 },
+  todo: { w: 4, h: 3 },
+  calendar: { w: 4, h: 3 },
+};
 
 class DashboardStore {
   workspaces = $state<Workspace[]>([]);
@@ -43,12 +50,14 @@ class DashboardStore {
     url: "https://",
     width: 1,
     height: 1,
+    settings: {},
   });
 
   activeWorkspace = $derived<Workspace | null>(
     this.workspaces.find((w) => w.id === this.activeWorkspaceId) ?? this.workspaces[0] ?? null,
   );
 
+  // Sorted by visual reading order (grid_y then grid_x) so mobile/tablet auto-flow matches desktop layout
   rootNodes = $derived<DashboardNode[]>(
     this.nodes
       .filter(
@@ -58,7 +67,7 @@ class DashboardStore {
           n.grid_x > 0 &&
           n.grid_y > 0,
       )
-      .sort((a, b) => a.sort_order - b.sort_order),
+      .sort((a, b) => a.grid_y - b.grid_y || a.grid_x - b.grid_x || a.sort_order - b.sort_order),
   );
 
   dockNodes = $derived<DashboardNode[]>(
@@ -141,29 +150,18 @@ class DashboardStore {
   }
 
   /**
-   * Clamps (x, y) so a node of (width, height) stays strictly inside one of the 8 (3x4) blocks.
+   * Clamps (x, y) so a node of (width, height) stays strictly inside the 16x8 grid.
    */
-  clampToBlock(
+  clampToGrid(
     x: number,
     y: number,
     width: number,
     height: number,
   ): { x: number; y: number; w: number; h: number } {
-    const w = Math.max(1, Math.min(width, BLOCK_COLS));
-    const h = Math.max(1, Math.min(height, BLOCK_ROWS));
-    const safeX = Math.max(1, Math.min(x, GRID_COLS));
-    const safeY = Math.max(1, Math.min(y, GRID_ROWS));
-
-    const bx = Math.floor((safeX - 1) / BLOCK_COLS);
-    const by = Math.floor((safeY - 1) / BLOCK_ROWS);
-
-    const blockMinX = bx * BLOCK_COLS + 1;
-    const blockMaxX = (bx + 1) * BLOCK_COLS;
-    const blockMinY = by * BLOCK_ROWS + 1;
-    const blockMaxY = (by + 1) * BLOCK_ROWS;
-
-    const clampedX = Math.max(blockMinX, Math.min(safeX, blockMaxX - w + 1));
-    const clampedY = Math.max(blockMinY, Math.min(safeY, blockMaxY - h + 1));
+    const w = Math.max(1, Math.min(width, GRID_COLS));
+    const h = Math.max(1, Math.min(height, GRID_ROWS));
+    const clampedX = Math.max(1, Math.min(x, GRID_COLS - w + 1));
+    const clampedY = Math.max(1, Math.min(y, GRID_ROWS - h + 1));
     return { x: clampedX, y: clampedY, w, h };
   }
 
@@ -171,11 +169,12 @@ class DashboardStore {
     for (const ws of this.workspaces) {
       const wsNodes = this.nodes
         .filter((n) => n.workspace_id === ws.id && !n.parent_id && n.grid_x > 0)
-        .sort((a, b) => a.sort_order - b.sort_order);
+        .sort((a, b) => a.grid_y - b.grid_y || a.grid_x - b.grid_x || a.sort_order - b.sort_order);
 
       const placed: DashboardNode[] = [];
       for (const n of wsNodes) {
-        const clamped = this.clampToBlock(n.grid_x, n.grid_y, n.width || 1, n.height || 1);
+        if (!n.settings) n.settings = {};
+        const clamped = this.clampToGrid(n.grid_x, n.grid_y, n.width || 1, n.height || 1);
         n.width = clamped.w;
         n.height = clamped.h;
 
@@ -201,16 +200,7 @@ class DashboardStore {
     height: number,
     existing: DashboardNode[],
   ): boolean {
-    if (x < 1 || y < 1 || x > GRID_COLS || y > GRID_ROWS) return false;
-
-    const bx = Math.floor((x - 1) / BLOCK_COLS);
-    const by = Math.floor((y - 1) / BLOCK_ROWS);
-    const blockMinX = bx * BLOCK_COLS + 1;
-    const blockMaxX = (bx + 1) * BLOCK_COLS;
-    const blockMinY = by * BLOCK_ROWS + 1;
-    const blockMaxY = (by + 1) * BLOCK_ROWS;
-
-    if (x < blockMinX || x + width - 1 > blockMaxX || y < blockMinY || y + height - 1 > blockMaxY) {
+    if (x < 1 || y < 1 || x + width - 1 > GRID_COLS || y + height - 1 > GRID_ROWS) {
       return false;
     }
 
@@ -238,18 +228,10 @@ class DashboardStore {
     height: number,
     existing: DashboardNode[],
   ): { x: number; y: number } | null {
-    for (let by = 0; by < BLOCKS_Y; by++) {
-      for (let bx = 0; bx < BLOCKS_X; bx++) {
-        const offsetX = bx * BLOCK_COLS;
-        const offsetY = by * BLOCK_ROWS;
-        for (let ly = 1; ly <= BLOCK_ROWS - height + 1; ly++) {
-          for (let lx = 1; lx <= BLOCK_COLS - width + 1; lx++) {
-            const x = offsetX + lx;
-            const y = offsetY + ly;
-            if (this.canFitAmong(x, y, width, height, existing)) {
-              return { x, y };
-            }
-          }
+    for (let y = 1; y <= GRID_ROWS - height + 1; y++) {
+      for (let x = 1; x <= GRID_COLS - width + 1; x++) {
+        if (this.canFitAmong(x, y, width, height, existing)) {
+          return { x, y };
         }
       }
     }
@@ -320,6 +302,9 @@ class DashboardStore {
 
     // Case 1: Dropped onto the bottom Dock dropzone ("dock:dropzone")
     if (targetId === "dock:dropzone") {
+      if (sourceNode.node_type !== "action" && sourceNode.node_type !== "container") {
+        return;
+      }
       sourceNode.parent_id = null;
       sourceNode.grid_x = -1;
       sourceNode.grid_y = -1;
@@ -354,7 +339,7 @@ class DashboardStore {
       const w = sourceNode.parent_id || sourceNode.grid_x === -1 ? 1 : sourceNode.width || 1;
       const h = sourceNode.parent_id || sourceNode.grid_y === -1 ? 1 : sourceNode.height || 1;
 
-      const clamped = this.clampToBlock(rawX, rawY, w, h);
+      const clamped = this.clampToGrid(rawX, rawY, w, h);
       if (!this.canPlaceAt(clamped.x, clamped.y, clamped.w, clamped.h, sourceNode.id)) {
         return;
       }
@@ -389,6 +374,9 @@ class DashboardStore {
 
     // Case 3: Dropped onto a node inside the Dock (-1, -1) -> dock & reorder
     if (!targetNode.parent_id && targetNode.grid_x === -1 && targetNode.grid_y === -1) {
+      if (sourceNode.node_type !== "action" && sourceNode.node_type !== "container") {
+        return;
+      }
       const currentDock = this.dockNodes.filter((n) => n.id !== sourceId);
       const targetIdx = currentDock.findIndex((n) => n.id === targetId);
 
@@ -496,47 +484,78 @@ class DashboardStore {
       return;
     }
 
-    // Case 6: Both are main-grid root nodes -> swap ONLY if they have identical dimensions
+    // Case 6: Both are main-grid root nodes -> swap if they have identical dimensions,
+    // or if both fit cleanly at each other's coordinates
     if (
       !sourceNode.parent_id &&
       !targetNode.parent_id &&
       sourceNode.grid_x > 0 &&
-      targetNode.grid_x > 0 &&
-      sourceNode.width === targetNode.width &&
-      sourceNode.height === targetNode.height
+      targetNode.grid_x > 0
     ) {
-      const prevX = sourceNode.grid_x;
-      const prevY = sourceNode.grid_y;
-      sourceNode.grid_x = targetNode.grid_x;
-      sourceNode.grid_y = targetNode.grid_y;
-      targetNode.grid_x = prevX;
-      targetNode.grid_y = prevY;
-      this.persistSnapshot();
+      const others = this.rootNodes.filter((n) => n.id !== sourceNode.id && n.id !== targetNode.id);
+      const sourceFitsAtTarget = this.canFitAmong(
+        targetNode.grid_x,
+        targetNode.grid_y,
+        sourceNode.width,
+        sourceNode.height,
+        others,
+      );
+      const targetFitsAtSource = this.canFitAmong(
+        sourceNode.grid_x,
+        sourceNode.grid_y,
+        targetNode.width,
+        targetNode.height,
+        others,
+      );
 
-      await fetch("/api/v1/nodes/reorder", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify([
-          {
-            id: sourceNode.id,
-            sort_order: sourceNode.sort_order,
-            grid_x: sourceNode.grid_x,
-            grid_y: sourceNode.grid_y,
-            width: sourceNode.width,
-            height: sourceNode.height,
-            parent_id: null,
-          },
-          {
-            id: targetNode.id,
-            sort_order: targetNode.sort_order,
-            grid_x: targetNode.grid_x,
-            grid_y: targetNode.grid_y,
-            width: targetNode.width,
-            height: targetNode.height,
-            parent_id: null,
-          },
-        ]),
-      });
+      // Ensure they don't overlap each other after swapping
+      const swappedTargetFake: DashboardNode = {
+        ...targetNode,
+        grid_x: sourceNode.grid_x,
+        grid_y: sourceNode.grid_y,
+      };
+      const noMutualOverlap = this.canFitAmong(
+        targetNode.grid_x,
+        targetNode.grid_y,
+        sourceNode.width,
+        sourceNode.height,
+        [swappedTargetFake],
+      );
+
+      if (sourceFitsAtTarget && targetFitsAtSource && noMutualOverlap) {
+        const prevX = sourceNode.grid_x;
+        const prevY = sourceNode.grid_y;
+        sourceNode.grid_x = targetNode.grid_x;
+        sourceNode.grid_y = targetNode.grid_y;
+        targetNode.grid_x = prevX;
+        targetNode.grid_y = prevY;
+        this.persistSnapshot();
+
+        await fetch("/api/v1/nodes/reorder", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify([
+            {
+              id: sourceNode.id,
+              sort_order: sourceNode.sort_order,
+              grid_x: sourceNode.grid_x,
+              grid_y: sourceNode.grid_y,
+              width: sourceNode.width,
+              height: sourceNode.height,
+              parent_id: null,
+            },
+            {
+              id: targetNode.id,
+              sort_order: targetNode.sort_order,
+              grid_x: targetNode.grid_x,
+              grid_y: targetNode.grid_y,
+              width: targetNode.width,
+              height: targetNode.height,
+              parent_id: null,
+            },
+          ]),
+        });
+      }
     }
   };
 
@@ -577,6 +596,14 @@ class DashboardStore {
       url: "https://",
       width: 1,
       height: 1,
+      settings: {
+        timezone: "Europe/Amsterdam",
+        flag: "🇳🇱",
+        placeholder: "Search the Web...",
+        engineUrl: "https://www.google.com/search?q=",
+        todos: [],
+        events: [],
+      },
     };
   }
 
@@ -596,6 +623,7 @@ class DashboardStore {
       url: node.url ?? "https://",
       width: node.width ?? 1,
       height: node.height ?? 1,
+      settings: structuredClone($state.snapshot(node.settings ?? {})),
     };
   }
 
@@ -603,28 +631,49 @@ class DashboardStore {
     this.nodeModal.open = false;
   }
 
+  async updateNodeSettings(nodeId: string, newSettings: NodeSettings): Promise<void> {
+    const node = this.nodes.find((n) => n.id === nodeId);
+    if (!node) return;
+
+    node.settings = newSettings;
+    this.persistSnapshot();
+
+    const res = await fetch(`/api/v1/nodes/${nodeId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ settings: newSettings }),
+    });
+
+    if (res.ok) {
+      const updated = (await res.json()) as DashboardNode;
+      const idx = this.nodes.findIndex((n) => n.id === updated.id);
+      if (idx !== -1) this.nodes[idx] = updated;
+      this.persistSnapshot();
+    }
+  }
+
   async saveNodeModal(): Promise<string | null> {
     if (!this.activeWorkspace) return null;
 
-    const isContainer = this.nodeModal.node_type === "container";
+    const isAction = this.nodeModal.node_type === "action";
     const isDockedOrChild =
       this.nodeModal.parent_id !== null ||
       (this.nodeModal.grid_x === -1 && this.nodeModal.grid_y === -1);
 
     const width =
-      !isContainer || isDockedOrChild
+      isAction || isDockedOrChild
         ? 1
-        : Math.max(1, Math.min(BLOCK_COLS, Number(this.nodeModal.width) || 1));
+        : Math.max(1, Math.min(GRID_COLS, Number(this.nodeModal.width) || 1));
     const height =
-      !isContainer || isDockedOrChild
+      isAction || isDockedOrChild
         ? 1
-        : Math.max(1, Math.min(BLOCK_ROWS, Number(this.nodeModal.height) || 1));
+        : Math.max(1, Math.min(GRID_ROWS, Number(this.nodeModal.height) || 1));
 
     let finalX = this.nodeModal.grid_x;
     let finalY = this.nodeModal.grid_y;
 
     if (!isDockedOrChild) {
-      const clamped = this.clampToBlock(finalX, finalY, width, height);
+      const clamped = this.clampToGrid(finalX, finalY, width, height);
       const ignoreId =
         this.nodeModal.mode === "edit" ? (this.nodeModal.id ?? undefined) : undefined;
 
@@ -634,12 +683,23 @@ class DashboardStore {
       } else {
         const fallback = this.findFirstFreeCell(width, height, ignoreId);
         if (!fallback) {
-          return `Not enough free space in any 3x4 block for a ${width}x${height} container.`;
+          return `Not enough free space on the 16x8 grid for a ${width}x${height} node.`;
         }
         finalX = fallback.x;
         finalY = fallback.y;
       }
     }
+
+    const defaultTitleMap: Record<NodeType, string> = {
+      action: "Untitled",
+      container: "Folder",
+      clock: "Clock",
+      search: "Search",
+      todo: "To-do list",
+      calendar: "Upcoming events",
+    };
+
+    const finalTitle = this.nodeModal.title.trim() || defaultTitleMap[this.nodeModal.node_type];
 
     if (this.nodeModal.mode === "create") {
       const siblings = this.nodes.filter(
@@ -655,12 +715,13 @@ class DashboardStore {
         sort_order: siblings.length + 1,
         grid_x: finalX,
         grid_y: finalY,
-        title: this.nodeModal.title.trim() || "Untitled",
-        icon: isContainer ? null : this.nodeModal.icon,
+        title: finalTitle,
+        icon: isAction ? this.nodeModal.icon : null,
         node_type: this.nodeModal.node_type,
-        url: isContainer ? null : this.nodeModal.url.trim(),
+        url: isAction ? this.nodeModal.url.trim() : null,
         width,
         height,
+        settings: this.nodeModal.settings,
       };
 
       const res = await fetch("/api/v1/nodes", {
@@ -676,13 +737,14 @@ class DashboardStore {
       }
     } else if (this.nodeModal.id) {
       const payload = {
-        title: this.nodeModal.title.trim() || "Untitled",
-        icon: isContainer ? null : this.nodeModal.icon,
-        url: isContainer ? null : this.nodeModal.url.trim(),
+        title: finalTitle,
+        icon: isAction ? this.nodeModal.icon : null,
+        url: isAction ? this.nodeModal.url.trim() : null,
         grid_x: finalX,
         grid_y: finalY,
         width,
         height,
+        settings: this.nodeModal.settings,
       };
 
       const res = await fetch(`/api/v1/nodes/${this.nodeModal.id}`, {

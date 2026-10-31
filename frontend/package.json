@@ -11,7 +11,8 @@
   },
   "dependencies": {
     "@dnd-kit/helpers": "^0.5.1",
-    "@dnd-kit/svelte": "^0.5.1"
+    "@dnd-kit/svelte": "^0.5.1",
+    "@lucide/svelte": "^1.66.0"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5.0.0",

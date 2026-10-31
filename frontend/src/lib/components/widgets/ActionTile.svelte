@@ -1,6 +1,6 @@
 <script lang="ts">
-    import { dashboard } from "../state/dashboard.svelte";
-    import { getNodeIconSrc, type DashboardNode } from "../types";
+    import { dashboard } from "../../state/dashboard.svelte";
+    import { getNodeIconSrc, type DashboardNode } from "../../types";
 
     interface Props {
         node: DashboardNode;
@@ -23,7 +23,7 @@
     target={dashboard.isEditMode ? undefined : "_blank"}
     rel="noopener noreferrer"
     onclick={handleClick}
-    class="aspect-square w-full h-full border p-2 flex flex-col items-center justify-center gap-1 text-center overflow-hidden"
+    class="aspect-square w-full h-full bg-card text-card-foreground border-[1.2px] border-card-border hover:border-primary shadow-md rounded-xl p-2 flex flex-col items-center justify-center gap-1 text-center overflow-hidden"
 >
     {#if iconSrc}
         <img

@@ -1,4 +1,31 @@
-export type NodeType = "action" | "container";
+export type NodeType = "action" | "container" | "clock" | "search" | "todo" | "calendar";
+
+export interface TodoItem {
+  id: string;
+  text: string;
+  date?: string;
+  priority?: boolean;
+  done: boolean;
+}
+
+export interface CalendarEvent {
+  id: string;
+  title: string;
+  time: string;
+}
+
+export interface NodeSettings {
+  // Clock widget settings
+  timezone?: string;
+  flag?: string;
+  // Search widget settings
+  placeholder?: string;
+  engineUrl?: string;
+  // Todo widget settings
+  todos?: TodoItem[];
+  // Calendar widget settings
+  events?: CalendarEvent[];
+}
 
 export interface Workspace {
   id: string;
@@ -20,6 +47,7 @@ export interface DashboardNode {
   url: string | null;
   width: number;
   height: number;
+  settings?: NodeSettings;
   created_at: string;
   updated_at: string;
 }
@@ -48,6 +76,7 @@ export interface NodeModalState {
   url: string;
   width: number;
   height: number;
+  settings: NodeSettings;
 }
 
 export interface DragEndEventPayload {
@@ -59,7 +88,7 @@ export interface DragEndEventPayload {
 }
 
 export function getNodeIconSrc(node: DashboardNode): string | null {
-  if (node.node_type === "container") return null;
+  if (node.node_type !== "action") return null;
   if (node.icon && node.icon.trim() !== "") {
     return node.icon;
   }

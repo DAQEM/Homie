@@ -1,5 +1,12 @@
 <script lang="ts">
-    import { dashboard, MAX_ICON_BYTES } from "../state/dashboard.svelte";
+    import {
+        dashboard,
+        DEFAULT_NODE_SIZES,
+        GRID_COLS,
+        GRID_ROWS,
+        MAX_ICON_BYTES,
+    } from "../state/dashboard.svelte";
+    import type { NodeType } from "../types";
 
     let formError = $state<string | null>(null);
 
@@ -8,6 +15,22 @@
             (dashboard.nodeModal.grid_x === -1 &&
                 dashboard.nodeModal.grid_y === -1),
     );
+
+    const nodeTypes: { type: NodeType; label: string }[] = [
+        { type: "action", label: "Action" },
+        { type: "container", label: "Container" },
+        { type: "clock", label: "Clock" },
+        { type: "search", label: "Search" },
+        { type: "todo", label: "To-Do" },
+        { type: "calendar", label: "Calendar" },
+    ];
+
+    function selectNodeType(t: NodeType) {
+        dashboard.nodeModal.node_type = t;
+        const size = DEFAULT_NODE_SIZES[t];
+        dashboard.nodeModal.width = size.w;
+        dashboard.nodeModal.height = size.h;
+    }
 
     function handleFileChange(e: Event) {
         formError = null;
@@ -51,29 +74,21 @@
             </h3>
 
             {#if dashboard.nodeModal.mode === "create" && !dashboard.nodeModal.parent_id}
-                <div class="flex gap-2">
-                    <button
-                        type="button"
-                        onclick={() =>
-                            (dashboard.nodeModal.node_type = "action")}
-                        class="border px-2 py-1 text-xs {dashboard.nodeModal
-                            .node_type === 'action'
-                            ? 'font-bold underline'
-                            : ''}"
-                    >
-                        Action
-                    </button>
-                    <button
-                        type="button"
-                        onclick={() =>
-                            (dashboard.nodeModal.node_type = "container")}
-                        class="border px-2 py-1 text-xs {dashboard.nodeModal
-                            .node_type === 'container'
-                            ? 'font-bold underline'
-                            : ''}"
-                    >
-                        Container
-                    </button>
+                <div class="flex flex-wrap gap-1">
+                    {#each nodeTypes as item (item.type)}
+                        {#if !(isDockedOrChild && item.type !== "action" && item.type !== "container")}
+                            <button
+                                type="button"
+                                onclick={() => selectNodeType(item.type)}
+                                class="border px-2 py-1 text-xs {dashboard
+                                    .nodeModal.node_type === item.type
+                                    ? 'font-bold underline'
+                                    : ''}"
+                            >
+                                {item.label}
+                            </button>
+                        {/if}
+                    {/each}
                 </div>
             {/if}
 
@@ -130,27 +145,68 @@
                         </div>
                     {/if}
                 </div>
-            {/if}
-
-            {#if dashboard.nodeModal.node_type === "container" && !isDockedOrChild}
+            {:else if dashboard.nodeModal.node_type === "clock"}
                 <div class="grid grid-cols-2 gap-2">
                     <label class="block space-y-1">
-                        <span class="text-xs block">Container Width (1–3)</span>
+                        <span class="text-xs block">IANA Timezone</span>
+                        <input
+                            type="text"
+                            required
+                            bind:value={dashboard.nodeModal.settings.timezone}
+                            placeholder="Europe/Belgrade"
+                            class="w-full border px-2 py-1 text-sm"
+                        />
+                    </label>
+                    <label class="block space-y-1">
+                        <span class="text-xs block">Flag / Badge</span>
+                        <input
+                            type="text"
+                            bind:value={dashboard.nodeModal.settings.flag}
+                            placeholder="🇷🇸"
+                            class="w-full border px-2 py-1 text-sm"
+                        />
+                    </label>
+                </div>
+            {:else if dashboard.nodeModal.node_type === "search"}
+                <label class="block space-y-1">
+                    <span class="text-xs block">Placeholder</span>
+                    <input
+                        type="text"
+                        bind:value={dashboard.nodeModal.settings.placeholder}
+                        placeholder="Search the Web..."
+                        class="w-full border px-2 py-1 text-sm"
+                    />
+                </label>
+                <label class="block space-y-1">
+                    <span class="text-xs block">Search Query URL Prefix</span>
+                    <input
+                        type="url"
+                        bind:value={dashboard.nodeModal.settings.engineUrl}
+                        placeholder="https://www.google.com/search?q="
+                        class="w-full border px-2 py-1 text-sm"
+                    />
+                </label>
+            {/if}
+
+            {#if dashboard.nodeModal.node_type !== "action" && !isDockedOrChild}
+                <div class="grid grid-cols-2 gap-2">
+                    <label class="block space-y-1">
+                        <span class="text-xs block">Width (1–{GRID_COLS})</span>
                         <input
                             type="number"
                             min="1"
-                            max="3"
+                            max={GRID_COLS}
                             bind:value={dashboard.nodeModal.width}
                             class="w-full border px-2 py-1 text-sm"
                         />
                     </label>
                     <label class="block space-y-1">
-                        <span class="text-xs block">Container Height (1–4)</span
+                        <span class="text-xs block">Height (1–{GRID_ROWS})</span
                         >
                         <input
                             type="number"
                             min="1"
-                            max="4"
+                            max={GRID_ROWS}
                             bind:value={dashboard.nodeModal.height}
                             class="w-full border px-2 py-1 text-sm"
                         />

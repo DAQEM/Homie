@@ -1,11 +1,7 @@
 <script lang="ts">
     import type { Snippet } from "svelte";
     import { createDraggable, createDroppable } from "@dnd-kit/svelte";
-    import {
-        BLOCK_COLS,
-        BLOCK_ROWS,
-        dashboard,
-    } from "../state/dashboard.svelte";
+    import { dashboard } from "../state/dashboard.svelte";
     import type { DashboardNode } from "../types";
 
     interface Props {
@@ -30,13 +26,12 @@
         !dashboard.isEditMode || (!inModal && dashboard.openFolderId !== null),
     );
 
-    let localCol = $derived(((node.grid_x - 1) % BLOCK_COLS) + 1);
-    let localRow = $derived(((node.grid_y - 1) % BLOCK_ROWS) + 1);
+    let isRootGridNode = $derived(!inContainer && !inDock);
 
     let gridStyle = $derived(
-        inContainer || inDock
+        !isRootGridNode
             ? ""
-            : `grid-column: ${localCol} / span ${node.width || 1}; grid-row: ${localRow} / span ${node.height || 1};`,
+            : `--col-start: ${node.grid_x}; --row-start: ${node.grid_y}; --col-span: ${node.width || 1}; --row-span: ${node.height || 1}; --col-span-sm: ${Math.min(node.width || 1, 4)}; --col-span-md: ${Math.min(node.width || 1, 8)}; --col-span-xl: ${Math.min(node.width || 1, 12)};`,
     );
 
     const droppable = createDroppable({
@@ -63,9 +58,9 @@
     style={gridStyle}
     class="relative z-10 {inDock
         ? 'w-20 h-20 shrink-0 aspect-square'
-        : 'w-full h-full'} {node.width === 1 && node.height === 1
-        ? 'aspect-square'
-        : ''} {droppable.isDropTarget ? 'outline-2 outline-dashed' : ''}"
+        : 'w-full h-full'} {isRootGridNode
+        ? 'col-[span_var(--col-span-sm)/span_var(--col-span-sm)] md:col-[span_var(--col-span-md)/span_var(--col-span-md)] xl:col-[span_var(--col-span-xl)/span_var(--col-span-xl)] row-[span_var(--row-span)/span_var(--row-span)] 2xl:col-[var(--col-start)/span_var(--col-span)] 2xl:row-[var(--row-start)/span_var(--row-span)]'
+        : ''}"
 >
     <div
         {@attach draggable.attach}

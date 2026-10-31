@@ -1,7 +1,7 @@
 <script lang="ts">
-    import { dashboard } from "../state/dashboard.svelte";
-    import { getNodeIconSrc, type DashboardNode } from "../types";
-    import SortableNode from "./SortableNode.svelte";
+    import { dashboard } from "../../state/dashboard.svelte";
+    import { getNodeIconSrc, type DashboardNode } from "../../types";
+    import SortableNode from "../SortableNode.svelte";
     import ActionTile from "./ActionTile.svelte";
 
     interface Props {
@@ -30,7 +30,7 @@
         {#each items as item (item.id)}
             {@const src = getNodeIconSrc(item)}
             <div
-                class="aspect-square border flex items-center justify-center p-0.5 overflow-hidden"
+                class="aspect-square bg-card flex items-center justify-center p-0.5 overflow-hidden"
             >
                 {#if src}
                     <img
@@ -53,7 +53,7 @@
         onclick={() => (dashboard.openFolderId = node.id)}
         onkeydown={(e) =>
             e.key === "Enter" && (dashboard.openFolderId = node.id)}
-        class="aspect-square w-full h-full border p-2 flex flex-col justify-between cursor-pointer overflow-hidden"
+        class="aspect-square w-full h-full bg-card text-card-foreground border border-card-border rounded-xl p-2 flex flex-col justify-between cursor-pointer overflow-hidden"
     >
         <div class="flex-1 min-h-0">
             {@render miniCluster(children.slice(0, 4))}

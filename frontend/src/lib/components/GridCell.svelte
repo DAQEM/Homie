@@ -1,10 +1,7 @@
 <script lang="ts">
     import { createDroppable } from "@dnd-kit/svelte";
-    import {
-        BLOCK_COLS,
-        BLOCK_ROWS,
-        dashboard,
-    } from "../state/dashboard.svelte";
+    import { dashboard } from "../state/dashboard.svelte";
+    import { Plus } from "@lucide/svelte";
 
     interface Props {
         x: number;
@@ -13,9 +10,6 @@
     }
 
     let { x, y, occupied = false }: Props = $props();
-
-    let localCol = $derived(((x - 1) % BLOCK_COLS) + 1);
-    let localRow = $derived(((y - 1) % BLOCK_ROWS) + 1);
 
     const droppable = createDroppable({
         get id() {
@@ -33,8 +27,8 @@
 
 <div
     {@attach droppable.attach}
-    style="grid-column: {localCol}; grid-row: {localRow};"
-    class="aspect-square w-full h-full {occupied
+    style="grid-column: {x}; grid-row: {y};"
+    class="hidden 2xl:block w-full h-full rounded-xl opacity-60 hover:opacity-100 {occupied
         ? 'pointer-events-none invisible'
         : ''} {!occupied && dashboard.isEditMode
         ? 'border border-dashed'
@@ -44,10 +38,9 @@
         <button
             type="button"
             onclick={() => dashboard.openCreateNodeModal(null, x, y)}
-            class="w-full h-full flex items-center justify-center text-xs opacity-40 hover:opacity-100"
-            title="Add node at ({x}, {y})"
+            class="w-full h-full flex items-center justify-center opacity-60 hover:opacity-100"
         >
-            +
+            <Plus class="size-4" />
         </button>
     {/if}
 </div>

@@ -2,7 +2,7 @@
     import { DragDropProvider } from "@dnd-kit/svelte";
     import { dashboard } from "../state/dashboard.svelte";
     import SortableNode from "./SortableNode.svelte";
-    import ActionTile from "./ActionTile.svelte";
+    import ActionTile from "./widgets/ActionTile.svelte";
 
     let folder = $derived(dashboard.openFolder);
     let children = $derived(folder ? dashboard.getChildren(folder.id) : []);
