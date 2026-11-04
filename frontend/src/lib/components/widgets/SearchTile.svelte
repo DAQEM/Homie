@@ -1,6 +1,8 @@
 <script lang="ts">
+    import { Search } from "@lucide/svelte";
     import { dashboard } from "../../state/dashboard.svelte";
     import type { DashboardNode } from "../../types";
+    import Button from "../ui/Button.svelte";
 
     interface Props {
         node: DashboardNode;
@@ -37,21 +39,22 @@
 
 <form
     onsubmit={handleSubmit}
-    class="w-full h-full border px-3 flex items-center gap-2 overflow-hidden"
+    class="w-full h-full bg-card text-card-foreground border-[1.2px] border-card-border focus-within:border-primary shadow-md rounded-xl px-4 flex items-center gap-3 overflow-hidden transition-colors"
 >
-    <span class="text-xs opacity-60 shrink-0">⌕</span>
+    <Search class="size-4 text-primary shrink-0" />
     <input
         type="text"
         bind:value={query}
         {placeholder}
         disabled={dashboard.isEditMode}
-        class="w-full h-full text-sm focus:outline-none bg-transparent"
+        class="w-full h-full text-sm text-foreground placeholder:text-foreground/40 focus:outline-none bg-transparent"
     />
-    <button
+    <Button
         type="submit"
+        size="sm"
         disabled={dashboard.isEditMode}
-        class="border px-2 py-0.5 text-xs shrink-0"
+        class="shrink-0"
     >
         Go
-    </button>
+    </Button>
 </form>

@@ -11,4 +11,6 @@
   --color-card: #1e1e1e;
   --color-card-foreground: #ffffff;
   --color-card-border: #2e2e2e;
+  --color-destructive: #cf6679;
+  --color-destructive-foreground: #000000;
 }

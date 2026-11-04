@@ -1,6 +1,7 @@
 <script lang="ts">
     import type { Snippet } from "svelte";
     import { createDraggable, createDroppable } from "@dnd-kit/svelte";
+    import { Pencil, X } from "@lucide/svelte";
     import { dashboard } from "../state/dashboard.svelte";
     import type { DashboardNode } from "../types";
 
@@ -57,10 +58,10 @@
     {@attach droppable.attach}
     style={gridStyle}
     class="relative z-10 {inDock
-        ? 'w-20 h-20 shrink-0 aspect-square'
+        ? 'w-20 h-[100px] shrink-0'
         : 'w-full h-full'} {isRootGridNode
         ? 'col-[span_var(--col-span-sm)/span_var(--col-span-sm)] md:col-[span_var(--col-span-md)/span_var(--col-span-md)] xl:col-[span_var(--col-span-xl)/span_var(--col-span-xl)] row-[span_var(--row-span)/span_var(--row-span)] 2xl:col-[var(--col-start)/span_var(--col-span)] 2xl:row-[var(--row-start)/span_var(--row-span)]'
-        : ''}"
+        : ''} {droppable.isDropTarget ? 'ring-2 ring-primary rounded-xl' : ''}"
 >
     <div
         {@attach draggable.attach}
@@ -73,9 +74,9 @@
                 type="button"
                 onclick={(e) => dashboard.deleteNode(node.id, e)}
                 title="Delete {node.title}"
-                class="absolute top-0 left-0 z-30 border px-1 text-xs bg-white text-black"
+                class="absolute -top-1.5 -left-1.5 z-30 size-5 rounded-full bg-destructive text-destructive-foreground shadow-md flex items-center justify-center hover:scale-110 transition-transform cursor-pointer"
             >
-                x
+                <X class="size-3" />
             </button>
 
             {#if showResizeBadge && !inDock}
@@ -83,9 +84,10 @@
                     type="button"
                     onclick={(e) => dashboard.openEditNodeModal(node, e)}
                     title="Edit {node.title}"
-                    class="absolute top-0 right-0 z-30 border px-1 text-xs bg-white text-black"
+                    class="absolute -top-1.5 -right-1.5 z-30 px-1.5 py-0.5 rounded-full bg-primary text-primary-foreground text-[10px] font-semibold shadow-md flex items-center gap-1 hover:scale-105 transition-transform cursor-pointer"
                 >
-                    {node.width}x{node.height} edit
+                    <span>{node.width}×{node.height}</span>
+                    <Pencil class="size-2.5" />
                 </button>
             {/if}
         {/if}

@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { X } from "@lucide/svelte";
     import {
         dashboard,
         DEFAULT_NODE_SIZES,
@@ -7,6 +8,7 @@
         MAX_ICON_BYTES,
     } from "../state/dashboard.svelte";
     import type { NodeType } from "../types";
+    import Button from "./ui/Button.svelte";
 
     let formError = $state<string | null>(null);
 
@@ -57,184 +59,221 @@
         e.preventDefault();
         formError = await dashboard.saveNodeModal();
     }
+
+    function handleClose() {
+        formError = null;
+        dashboard.closeNodeModal();
+    }
 </script>
 
 {#if dashboard.nodeModal.open}
     <div
-        class="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4"
+        class="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
     >
         <form
             onsubmit={handleSubmit}
-            class="max-w-md w-full bg-white text-black border p-4 space-y-3"
+            class="max-w-md w-full bg-card text-card-foreground border-[1.2px] border-card-border rounded-2xl shadow-2xl p-6 space-y-4"
         >
-            <h3 class="text-base font-bold">
-                {dashboard.nodeModal.mode === "create"
-                    ? "Add Node"
-                    : "Edit Node"}
-            </h3>
+            <div
+                class="flex items-center justify-between border-b border-card-border pb-3"
+            >
+                <h3 class="text-base font-bold">
+                    {dashboard.nodeModal.mode === "create"
+                        ? "Add Node"
+                        : "Edit Node"}
+                </h3>
+                <Button variant="ghost" size="icon" onclick={handleClose}>
+                    <X class="size-4" />
+                </Button>
+            </div>
 
             {#if dashboard.nodeModal.mode === "create" && !dashboard.nodeModal.parent_id}
-                <div class="flex flex-wrap gap-1">
-                    {#each nodeTypes as item (item.type)}
-                        {#if !(isDockedOrChild && item.type !== "action" && item.type !== "container")}
-                            <button
-                                type="button"
-                                onclick={() => selectNodeType(item.type)}
-                                class="border px-2 py-1 text-xs {dashboard
-                                    .nodeModal.node_type === item.type
-                                    ? 'font-bold underline'
-                                    : ''}"
-                            >
-                                {item.label}
-                            </button>
-                        {/if}
-                    {/each}
+                <div class="space-y-1.5">
+                    <span class="text-xs font-medium text-foreground/70 block">
+                        Node Type
+                    </span>
+                    <div class="flex flex-wrap gap-1.5">
+                        {#each nodeTypes as item (item.type)}
+                            {#if !(isDockedOrChild && item.type !== "action" && item.type !== "container")}
+                                <button
+                                    type="button"
+                                    onclick={() => selectNodeType(item.type)}
+                                    class="px-3 py-1.5 rounded-xl text-xs font-medium transition-colors cursor-pointer {dashboard
+                                        .nodeModal.node_type === item.type
+                                        ? 'bg-primary text-primary-foreground'
+                                        : 'bg-background border border-card-border text-foreground/70 hover:text-foreground hover:border-primary/50'}"
+                                >
+                                    {item.label}
+                                </button>
+                            {/if}
+                        {/each}
+                    </div>
                 </div>
             {/if}
 
-            <label class="block space-y-1">
-                <span class="text-xs block">Title</span>
+            <label class="block space-y-1.5">
+                <span class="text-xs font-medium text-foreground/70 block">
+                    Title
+                </span>
                 <input
                     type="text"
                     required
                     bind:value={dashboard.nodeModal.title}
                     placeholder="Title"
-                    class="w-full border px-2 py-1 text-sm"
+                    class="w-full bg-background border border-card-border focus:border-primary rounded-xl px-3 py-2 text-sm text-foreground placeholder:text-foreground/40 focus:outline-none transition-colors"
                 />
             </label>
 
             {#if dashboard.nodeModal.node_type === "action"}
-                <label class="block space-y-1">
-                    <span class="text-xs block"
-                        >URL (Favicon used automatically)</span
-                    >
+                <label class="block space-y-1.5">
+                    <span class="text-xs font-medium text-foreground/70 block">
+                        URL (Favicon used automatically)
+                    </span>
                     <input
                         type="url"
                         required
                         bind:value={dashboard.nodeModal.url}
                         placeholder="https://example.com"
-                        class="w-full border px-2 py-1 text-sm"
+                        class="w-full bg-background border border-card-border focus:border-primary rounded-xl px-3 py-2 text-sm text-foreground placeholder:text-foreground/40 focus:outline-none transition-colors"
                     />
                 </label>
 
-                <div class="space-y-1">
-                    <span class="text-xs block"
-                        >Custom Icon Upload (optional, max 100 KB)</span
-                    >
+                <div class="space-y-1.5">
+                    <span class="text-xs font-medium text-foreground/70 block">
+                        Custom Icon Upload (optional, max 100 KB)
+                    </span>
                     <input
                         type="file"
                         accept="image/*"
                         onchange={handleFileChange}
-                        class="w-full text-xs"
+                        class="w-full text-xs text-foreground/70 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-secondary file:text-secondary-foreground hover:file:bg-secondary/90 file:cursor-pointer"
                     />
                     {#if dashboard.nodeModal.icon}
-                        <div class="flex items-center gap-2 pt-1">
-                            <img
-                                src={dashboard.nodeModal.icon}
-                                alt="Custom preview"
-                                class="w-6 h-6 object-contain border"
-                            />
-                            <button
-                                type="button"
+                        <div
+                            class="flex items-center justify-between gap-2 bg-background border border-card-border rounded-xl p-2 mt-1"
+                        >
+                            <div class="flex items-center gap-2">
+                                <img
+                                    src={dashboard.nodeModal.icon}
+                                    alt="Custom preview"
+                                    class="w-7 h-7 object-contain rounded border border-card-border p-0.5"
+                                />
+                                <span class="text-xs text-foreground/70">
+                                    Custom icon selected
+                                </span>
+                            </div>
+                            <Button
+                                variant="outline"
+                                size="sm"
                                 onclick={() =>
                                     (dashboard.nodeModal.icon = null)}
-                                class="border px-2 py-0.5 text-xs"
                             >
                                 Use Website Favicon
-                            </button>
+                            </Button>
                         </div>
                     {/if}
                 </div>
             {:else if dashboard.nodeModal.node_type === "clock"}
-                <div class="grid grid-cols-2 gap-2">
-                    <label class="block space-y-1">
-                        <span class="text-xs block">IANA Timezone</span>
+                <div class="grid grid-cols-2 gap-3">
+                    <label class="block space-y-1.5">
+                        <span
+                            class="text-xs font-medium text-foreground/70 block"
+                        >
+                            IANA Timezone
+                        </span>
                         <input
                             type="text"
                             required
                             bind:value={dashboard.nodeModal.settings.timezone}
-                            placeholder="Europe/Belgrade"
-                            class="w-full border px-2 py-1 text-sm"
+                            placeholder="Europe/Amsterdam"
+                            class="w-full bg-background border border-card-border focus:border-primary rounded-xl px-3 py-2 text-sm text-foreground placeholder:text-foreground/40 focus:outline-none transition-colors"
                         />
                     </label>
-                    <label class="block space-y-1">
-                        <span class="text-xs block">Flag / Badge</span>
+                    <label class="block space-y-1.5">
+                        <span
+                            class="text-xs font-medium text-foreground/70 block"
+                        >
+                            Flag / Badge
+                        </span>
                         <input
                             type="text"
                             bind:value={dashboard.nodeModal.settings.flag}
-                            placeholder="🇷🇸"
-                            class="w-full border px-2 py-1 text-sm"
+                            placeholder="🇳🇱"
+                            class="w-full bg-background border border-card-border focus:border-primary rounded-xl px-3 py-2 text-sm text-foreground placeholder:text-foreground/40 focus:outline-none transition-colors"
                         />
                     </label>
                 </div>
             {:else if dashboard.nodeModal.node_type === "search"}
-                <label class="block space-y-1">
-                    <span class="text-xs block">Placeholder</span>
+                <label class="block space-y-1.5">
+                    <span class="text-xs font-medium text-foreground/70 block">
+                        Placeholder
+                    </span>
                     <input
                         type="text"
                         bind:value={dashboard.nodeModal.settings.placeholder}
                         placeholder="Search the Web..."
-                        class="w-full border px-2 py-1 text-sm"
+                        class="w-full bg-background border border-card-border focus:border-primary rounded-xl px-3 py-2 text-sm text-foreground placeholder:text-foreground/40 focus:outline-none transition-colors"
                     />
                 </label>
-                <label class="block space-y-1">
-                    <span class="text-xs block">Search Query URL Prefix</span>
+                <label class="block space-y-1.5">
+                    <span class="text-xs font-medium text-foreground/70 block">
+                        Search Query URL Prefix
+                    </span>
                     <input
                         type="url"
                         bind:value={dashboard.nodeModal.settings.engineUrl}
                         placeholder="https://www.google.com/search?q="
-                        class="w-full border px-2 py-1 text-sm"
+                        class="w-full bg-background border border-card-border focus:border-primary rounded-xl px-3 py-2 text-sm text-foreground placeholder:text-foreground/40 focus:outline-none transition-colors"
                     />
                 </label>
             {/if}
 
             {#if dashboard.nodeModal.node_type !== "action" && !isDockedOrChild}
-                <div class="grid grid-cols-2 gap-2">
-                    <label class="block space-y-1">
-                        <span class="text-xs block">Width (1–{GRID_COLS})</span>
+                <div class="grid grid-cols-2 gap-3">
+                    <label class="block space-y-1.5">
+                        <span
+                            class="text-xs font-medium text-foreground/70 block"
+                        >
+                            Width (1–{GRID_COLS})
+                        </span>
                         <input
                             type="number"
                             min="1"
                             max={GRID_COLS}
                             bind:value={dashboard.nodeModal.width}
-                            class="w-full border px-2 py-1 text-sm"
+                            class="w-full bg-background border border-card-border focus:border-primary rounded-xl px-3 py-2 text-sm text-foreground focus:outline-none transition-colors"
                         />
                     </label>
-                    <label class="block space-y-1">
-                        <span class="text-xs block">Height (1–{GRID_ROWS})</span
+                    <label class="block space-y-1.5">
+                        <span
+                            class="text-xs font-medium text-foreground/70 block"
                         >
+                            Height (1–{GRID_ROWS})
+                        </span>
                         <input
                             type="number"
                             min="1"
                             max={GRID_ROWS}
                             bind:value={dashboard.nodeModal.height}
-                            class="w-full border px-2 py-1 text-sm"
+                            class="w-full bg-background border border-card-border focus:border-primary rounded-xl px-3 py-2 text-sm text-foreground focus:outline-none transition-colors"
                         />
                     </label>
                 </div>
             {/if}
 
             {#if formError}
-                <p class="text-xs border p-2">{formError}</p>
+                <p
+                    class="text-xs bg-destructive/15 border border-destructive/40 text-destructive rounded-xl p-2.5"
+                >
+                    {formError}
+                </p>
             {/if}
 
-            <div class="flex justify-end gap-2 pt-2">
-                <button
-                    type="button"
-                    onclick={() => {
-                        formError = null;
-                        dashboard.closeNodeModal();
-                    }}
-                    class="border px-3 py-1 text-xs"
-                >
-                    Cancel
-                </button>
-                <button
-                    type="submit"
-                    class="border px-3 py-1 text-xs font-bold"
-                >
-                    Save
-                </button>
+            <div
+                class="flex justify-end gap-2 pt-2 border-t border-card-border"
+            >
+                <Button variant="ghost" onclick={handleClose}>Cancel</Button>
+                <Button type="submit" variant="default">Save</Button>
             </div>
         </form>
     </div>

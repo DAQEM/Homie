@@ -1,4 +1,6 @@
 <script lang="ts">
+    import { Clock } from "@lucide/svelte";
+    import { dashboard } from "../../state/dashboard.svelte";
     import type { DashboardNode } from "../../types";
 
     interface Props {
@@ -46,21 +48,32 @@
     });
 </script>
 
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-    class="w-full h-full border p-3 flex flex-col justify-between overflow-hidden"
+    onclick={(e) =>
+        dashboard.isEditMode && dashboard.openEditNodeModal(node, e)}
+    class="w-full h-full bg-card text-card-foreground border-[1.2px] border-card-border hover:border-primary/60 shadow-md rounded-xl p-4 flex flex-col justify-between overflow-hidden select-none transition-colors"
 >
     <div class="flex items-center justify-between gap-2">
-        <span class="text-xs truncate">{node.title}</span>
+        <div class="flex items-center gap-1.5 min-w-0">
+            <Clock class="size-3.5 text-primary shrink-0" />
+            <span class="text-xs font-medium text-foreground/80 truncate">
+                {node.title}
+            </span>
+        </div>
         {#if flag}
-            <span class="text-xs shrink-0">{flag}</span>
+            <span class="text-base leading-none shrink-0">{flag}</span>
         {/if}
     </div>
 
-    <div class="text-2xl font-bold leading-none truncate">
+    <div
+        class="text-3xl sm:text-4xl font-bold tracking-tight text-foreground truncate my-auto"
+    >
         {timeString}
     </div>
 
-    <div class="text-[10px] opacity-60 truncate">
+    <div class="text-[11px] text-foreground/50 font-medium truncate">
         {offsetString}
     </div>
 </div>

@@ -31,7 +31,7 @@
     });
 </script>
 
-<main class="p-4 pb-28 space-y-6">
+<main class="p-4 pb-32 space-y-6">
     <section
         class="max-w-[368px] md:max-w-[752px] xl:max-w-[1136px] 2xl:max-w-[1520px] mx-auto"
     >
@@ -41,7 +41,7 @@
     <DragDropProvider onDragEnd={dashboard.handleDragEnd}>
         <!-- width = amount of blocks * (80 + gap in pixels) - gap in pixels -->
         <section
-            class="grid grid-cols-4 md:grid-cols-8 xl:grid-cols-12 2xl:grid-cols-16 auto-rows-[80px] gap-4 max-w-[368px] md:max-w-[752px] xl:max-w-[1136px] 2xl:max-w-[1520px] mx-auto"
+            class="grid grid-cols-4 md:grid-cols-8 xl:grid-cols-12 2xl:grid-cols-16 auto-rows-[100px] gap-4 max-w-[368px] md:max-w-[752px] xl:max-w-[1136px] 2xl:max-w-[1520px] mx-auto"
         >
             {#each cells as cell (`${cell.x}:${cell.y}`)}
                 <GridCell x={cell.x} y={cell.y} occupied={cell.occupied} />

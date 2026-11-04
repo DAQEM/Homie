@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { Plus } from "@lucide/svelte";
     import { dashboard } from "../../state/dashboard.svelte";
     import { getNodeIconSrc, type DashboardNode } from "../../types";
     import SortableNode from "../SortableNode.svelte";
@@ -30,7 +31,7 @@
         {#each items as item (item.id)}
             {@const src = getNodeIconSrc(item)}
             <div
-                class="aspect-square bg-card flex items-center justify-center p-0.5 overflow-hidden"
+                class="bg-background/80 border border-card-border rounded-md flex items-center justify-center p-0.5 overflow-hidden"
             >
                 {#if src}
                     <img
@@ -39,7 +40,11 @@
                         class="w-4 h-4 object-contain"
                     />
                 {:else}
-                    <span class="text-[10px] truncate">{item.title}</span>
+                    <span
+                        class="text-[9px] font-semibold text-primary truncate"
+                    >
+                        {item.title.slice(0, 2)}
+                    </span>
                 {/if}
             </div>
         {/each}
@@ -53,55 +58,78 @@
         onclick={() => (dashboard.openFolderId = node.id)}
         onkeydown={(e) =>
             e.key === "Enter" && (dashboard.openFolderId = node.id)}
-        class="aspect-square w-full h-full bg-card text-card-foreground border border-card-border rounded-xl p-2 flex flex-col justify-between cursor-pointer overflow-hidden"
+        class="group w-full h-full flex flex-col items-center gap-1.5 cursor-pointer text-center overflow-hidden select-none"
     >
-        <div class="flex-1 min-h-0">
+        <div
+            class="w-full flex-1 min-h-0 bg-card text-card-foreground border-[1.2px] border-card-border group-hover:border-primary shadow-md rounded-xl p-2 overflow-hidden transition-colors"
+        >
             {@render miniCluster(children.slice(0, 4))}
         </div>
-        <span class="text-xs truncate text-center mt-1">{node.title}</span>
+        <span
+            class="text-xs text-foreground/80 group-hover:text-foreground transition-colors truncate w-full shrink-0 leading-tight"
+        >
+            {node.title}
+        </span>
     </div>
 {:else}
-    <div class="w-full h-full border p-2 flex flex-col gap-1 overflow-hidden">
-        <div class="flex items-center justify-between">
-            <span class="text-xs truncate">{node.title}</span>
-            {#if dashboard.isEditMode}
-                <button
-                    type="button"
-                    onclick={(e) => {
-                        e.stopPropagation();
-                        dashboard.openCreateNodeModal(node.id);
-                    }}
-                    class="border px-1 text-xs"
-                >
-                    + Item
-                </button>
-            {/if}
-        </div>
+    <div class="relative w-full h-full flex flex-col gap-1.5 overflow-hidden">
+        {#if dashboard.isEditMode}
+            <button
+                type="button"
+                onclick={(e) => {
+                    e.stopPropagation();
+                    dashboard.openCreateNodeModal(node.id);
+                }}
+                class="absolute bottom-6 right-2 z-20 inline-flex items-center gap-1 rounded-full bg-secondary text-secondary-foreground px-2 py-0.5 text-[10px] font-semibold shadow-md hover:scale-105 transition-transform cursor-pointer"
+            >
+                <Plus class="size-3" />
+                Item
+            </button>
+        {/if}
 
         <div
-            style="grid-template-columns: repeat({node.width}, minmax(0, 1fr)); grid-template-rows: repeat({node.height}, minmax(0, 1fr));"
-            class="grid gap-1 flex-1 min-h-0"
+            class="w-full flex-1 min-h-0 bg-card/60 text-card-foreground border-[1.2px] border-card-border shadow-md rounded-xl p-2.5 overflow-hidden"
         >
-            {#each directItems as child (child.id)}
-                <SortableNode
-                    node={child}
-                    inContainer={true}
-                    showResizeBadge={false}
-                >
-                    <ActionTile node={child} />
-                </SortableNode>
-            {/each}
+            <div
+                style="grid-template-columns: repeat({node.width}, minmax(0, 1fr)); grid-template-rows: repeat({node.height}, minmax(0, 1fr));"
+                class="grid gap-2.5 w-full h-full"
+            >
+                {#each directItems as child (child.id)}
+                    <SortableNode
+                        node={child}
+                        inContainer={true}
+                        showResizeBadge={false}
+                    >
+                        <ActionTile node={child} />
+                    </SortableNode>
+                {/each}
 
-            {#if hasOverflow}
-                <button
-                    type="button"
-                    onclick={() => (dashboard.openFolderId = node.id)}
-                    title="Open {node.title}"
-                    class="aspect-square w-full h-full border p-1 cursor-pointer"
-                >
-                    {@render miniCluster(overflowItems)}
-                </button>
-            {/if}
+                {#if hasOverflow}
+                    <button
+                        type="button"
+                        onclick={() => (dashboard.openFolderId = node.id)}
+                        title="Open {node.title}"
+                        class="group w-full h-full flex flex-col items-center gap-1.5 cursor-pointer text-center overflow-hidden"
+                    >
+                        <div
+                            class="w-full flex-1 min-h-0 bg-card border-[1.2px] border-card-border group-hover:border-primary shadow-md rounded-xl p-1.5 overflow-hidden transition-colors"
+                        >
+                            {@render miniCluster(overflowItems)}
+                        </div>
+                        <span
+                            class="text-xs text-foreground/80 group-hover:text-foreground transition-colors truncate w-full shrink-0 leading-tight"
+                        >
+                            More
+                        </span>
+                    </button>
+                {/if}
+            </div>
         </div>
+
+        <span
+            class="text-xs text-foreground/80 truncate w-full text-center shrink-0 leading-tight"
+        >
+            {node.title}
+        </span>
     </div>
 {/if}
