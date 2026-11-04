@@ -15,6 +15,7 @@
     import ControlCenterPopover from "./lib/components/ControlCenterPopover.svelte";
     import ContextMenu from "./lib/components/ContextMenu.svelte";
     import FolderModal from "./lib/components/FolderModal.svelte";
+    import CalendarModal from "./lib/components/CalendarModal.svelte";
     import AppLibraryModal from "./lib/components/AppLibraryModal.svelte";
     import NodeFormModal from "./lib/components/NodeFormModal.svelte";
     import WorkspaceModal from "./lib/components/WorkspaceModal.svelte";
@@ -88,6 +89,7 @@
 
     let isFullModalRecessed = $derived(
         dashboard.openFolderId !== null ||
+            dashboard.openCalendarNodeId !== null ||
             dashboard.isSpotlightOpen ||
             dashboard.isAppLibraryOpen,
     );
@@ -182,6 +184,7 @@
         const isTyping =
             tag === "INPUT" ||
             tag === "TEXTAREA" ||
+            tag === "SELECT" ||
             (e.target as HTMLElement | null)?.isContentEditable;
 
         if (e.key === "Escape") {
@@ -191,6 +194,10 @@
             }
             if (dashboard.isSpotlightOpen) {
                 dashboard.closeSpotlight();
+                return;
+            }
+            if (dashboard.openCalendarNodeId) {
+                dashboard.closeCalendarModal();
                 return;
             }
             if (dashboard.isAppLibraryOpen) {
@@ -224,6 +231,7 @@
         if (
             e.key === "/" &&
             !dashboard.openFolderId &&
+            !dashboard.openCalendarNodeId &&
             !dashboard.isAppLibraryOpen &&
             !dashboard.isControlCenterOpen &&
             !dashboard.nodeModal.open &&
@@ -242,6 +250,7 @@
 
         if (
             dashboard.isSpotlightOpen ||
+            dashboard.openCalendarNodeId ||
             dashboard.isAppLibraryOpen ||
             dashboard.isControlCenterOpen ||
             dashboard.contextMenu.open ||
@@ -264,6 +273,7 @@
     function handleHorizontalWheel(e: WheelEvent) {
         if (
             dashboard.isSpotlightOpen ||
+            dashboard.openCalendarNodeId ||
             dashboard.isAppLibraryOpen ||
             dashboard.isControlCenterOpen ||
             dashboard.contextMenu.open ||
@@ -605,6 +615,7 @@
 <SpotlightModal />
 <ContextMenu />
 <FolderModal />
+<CalendarModal />
 <AppLibraryModal />
 <NodeFormModal />
 <WorkspaceModal />

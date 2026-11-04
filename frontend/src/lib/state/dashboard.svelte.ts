@@ -6,6 +6,7 @@ import {
   type AppLibraryCategoryId,
   type BootstrapPayload,
   type CalendarEvent,
+  type CalendarSyncStatus,
   type DashboardNode,
   type DragEndEventPayload,
   type NodeModalState,
@@ -140,6 +141,11 @@ class DashboardStore {
   private folderAnchorEls = new Map<string, HTMLElement>();
   private folderCloseTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // Expanded Full Calendar Modal State
+  openCalendarNodeId = $state<string | null>(null);
+  openCalendarInitialDate = $state<string | null>(null);
+  openCalendarOrigin = $state<{ cx: number; cy: number } | null>(null);
+
   isAppLibraryOpen = $state<boolean>(false);
   appLibraryOrigin = $state<{ cx: number; cy: number } | null>(null);
   flippedNodeId = $state<string | null>(null);
@@ -157,6 +163,7 @@ class DashboardStore {
   // Step 5: Smart Stacks & App Usage Tracking
   appUsageMap = $state<Record<string, number>>({});
   activeStackIndices = $state<Record<string, number>>({});
+  syncingCalendarNodes = $state<Record<string, boolean>>({});
 
   // Step 2: Platter Lift Quick Actions, Hold-to-Drag & Drop Settlement
   contextMenu = $state<ContextMenuState>({
@@ -277,6 +284,10 @@ class DashboardStore {
 
   openFolder = $derived<DashboardNode | null>(
     this.nodes.find((n) => n.id === this.openFolderId) ?? null,
+  );
+
+  openCalendarNode = $derived<DashboardNode | null>(
+    this.nodes.find((n) => n.id === this.openCalendarNodeId) ?? null,
   );
 
   contextMenuNode = $derived<DashboardNode | null>(
@@ -430,6 +441,88 @@ class DashboardStore {
       this.stopPageSpring();
       sse.close();
     };
+  }
+
+  // =========================================================================
+  // Calendar iCal (.ics) Feed & Expanded Modal Helpers
+  // =========================================================================
+
+  openCalendarModal(nodeId: string, initialDateIso?: string, originEl?: HTMLElement | null): void {
+    this.closeContextMenu();
+    this.closeControlCenter();
+    this.closeAppLibrary();
+    this.closeSpotlight();
+    this.openFolderId = null;
+    this.isFolderClosing = false;
+    this.flippedNodeId = null;
+
+    if (originEl) {
+      const rect = originEl.getBoundingClientRect();
+      this.openCalendarOrigin = {
+        cx: rect.left + rect.width / 2,
+        cy: rect.top + rect.height / 2,
+      };
+    } else {
+      this.openCalendarOrigin = null;
+    }
+
+    this.openCalendarInitialDate = initialDateIso ?? null;
+    this.openCalendarNodeId = nodeId;
+  }
+
+  closeCalendarModal(): void {
+    this.openCalendarNodeId = null;
+    this.openCalendarInitialDate = null;
+  }
+
+  getCalendarEventsForNode(node: DashboardNode): CalendarEvent[] {
+    if (node.id === "gallery-preview-node") {
+      return node.settings?.events ?? [];
+    }
+
+    const rawSignal = this.signals[`calendar:events:${node.id}`];
+    const syncedEvents: CalendarEvent[] = Array.isArray(rawSignal)
+      ? (rawSignal as CalendarEvent[])
+      : [];
+
+    return [...syncedEvents].sort((a, b) => {
+      const aDate = a.date ?? "";
+      const bDate = b.date ?? "";
+      if (aDate !== bDate) return aDate.localeCompare(bDate);
+
+      const aAllDay = Boolean(a.isAllDay || a.time.toLowerCase() === "all day");
+      const bAllDay = Boolean(b.isAllDay || b.time.toLowerCase() === "all day");
+      if (aAllDay !== bAllDay) return aAllDay ? -1 : 1;
+
+      return a.time.localeCompare(b.time) || a.title.localeCompare(b.title);
+    });
+  }
+
+  getCalendarStatusForNode(nodeId: string): CalendarSyncStatus | null {
+    const raw = this.signals[`calendar:status:${nodeId}`];
+    if (raw && typeof raw === "object" && "feeds" in raw) {
+      return raw as CalendarSyncStatus;
+    }
+    return null;
+  }
+
+  async syncCalendarNodeNow(nodeId: string): Promise<void> {
+    if (this.syncingCalendarNodes[nodeId]) return;
+    this.syncingCalendarNodes[nodeId] = true;
+    try {
+      const res = await fetch(`/api/v1/nodes/${nodeId}/calendar-sync`, {
+        method: "POST",
+      });
+      if (res.ok) {
+        const status = (await res.json()) as CalendarSyncStatus;
+        this.signals[`calendar:status:${nodeId}`] = status;
+        this.persistSnapshot();
+      }
+    } catch {
+      // Ignore transient network errors
+    } finally {
+      this.syncingCalendarNodes[nodeId] = false;
+    }
   }
 
   getWorkspaceRootNodes(workspaceId: string): DashboardNode[] {
@@ -588,6 +681,7 @@ class DashboardStore {
     this.closeContextMenu();
     this.closeControlCenter();
     this.closeAppLibrary();
+    this.closeCalendarModal();
     this.flippedNodeId = null;
 
     const targetEl = originEl ?? this.folderAnchorEls.get(nodeId) ?? null;
@@ -633,6 +727,7 @@ class DashboardStore {
     this.closeContextMenu();
     this.closeControlCenter();
     this.closeSpotlight();
+    this.closeCalendarModal();
     this.openFolderId = null;
     this.isFolderClosing = false;
     this.flippedNodeId = null;
@@ -824,6 +919,7 @@ class DashboardStore {
       localStorage.setItem(WORKSPACE_STORAGE_KEY, targetWs.id);
       this.openFolderId = null;
       this.isFolderClosing = false;
+      this.closeCalendarModal();
       this.flippedNodeId = null;
       this.closeContextMenu();
       this.clearDragPreview();
@@ -1163,6 +1259,7 @@ class DashboardStore {
     this.closeContextMenu();
     this.closeControlCenter();
     this.closeAppLibrary();
+    this.closeCalendarModal();
     this.flippedNodeId = null;
     this.spotlightInitialQuery = initialQuery;
     this.isSpotlightOpen = true;
@@ -1226,12 +1323,17 @@ class DashboardStore {
       title = match[2];
     }
 
+    const now = this.now;
+    const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+
     const currentEvents = calNode.settings?.events ?? [];
     const newEvent: CalendarEvent = {
       id: crypto.randomUUID(),
       title,
       time,
+      date: todayIso,
       color: "#0A84FF",
+      source: "local",
     };
 
     await this.updateNodeSettings(calNode.id, {
@@ -1245,6 +1347,7 @@ class DashboardStore {
     event?.stopPropagation();
     event?.preventDefault();
     this.closeContextMenu();
+    this.closeCalendarModal();
 
     const isRootMultiCellWidget =
       !node.parent_id &&
@@ -1290,7 +1393,7 @@ class DashboardStore {
     this.flippedNodeId = null;
     this.persistSnapshot();
 
-    void fetch(`/api/v1/nodes/${nodeId}`, {
+    const res = await fetch(`/api/v1/nodes/${nodeId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1300,6 +1403,10 @@ class DashboardStore {
         settings: updates.settings,
       }),
     });
+
+    if (res.ok && node.node_type === "calendar") {
+      void this.syncCalendarNodeNow(nodeId);
+    }
   }
 
   async renameNode(nodeId: string, newTitle: string): Promise<void> {
@@ -2049,6 +2156,7 @@ class DashboardStore {
       localStorage.setItem(WORKSPACE_STORAGE_KEY, id);
       this.openFolderId = null;
       this.isFolderClosing = false;
+      this.closeCalendarModal();
       this.flippedNodeId = null;
       this.closeContextMenu();
       this.clearDragPreview();
@@ -2121,6 +2229,7 @@ class DashboardStore {
     this.isEditMode = !this.isEditMode;
     this.closeContextMenu();
     this.closeControlCenter();
+    this.closeCalendarModal();
     if (!this.isEditMode) {
       this.flippedNodeId = null;
       this.clearDragPreview();
@@ -2130,6 +2239,7 @@ class DashboardStore {
   enterEditMode(): void {
     this.closeContextMenu();
     this.closeControlCenter();
+    this.closeCalendarModal();
     if (!this.isEditMode) {
       this.isEditMode = true;
     }
@@ -2492,6 +2602,8 @@ class DashboardStore {
         engineUrl: "https://www.google.com/search?q=",
         todos: [],
         events: [],
+        icalUrl: "",
+        calendarFeeds: [],
       },
     };
   }
@@ -2585,6 +2697,27 @@ class DashboardStore {
 
     const finalTitle = this.nodeModal.title.trim() || defaultTitleMap[this.nodeModal.node_type];
 
+    const settingsSnapshot = structuredClone($state.snapshot(this.nodeModal.settings));
+    if (
+      this.nodeModal.node_type === "calendar" &&
+      settingsSnapshot.icalUrl &&
+      settingsSnapshot.icalUrl.trim() !== ""
+    ) {
+      const trimmedUrl = settingsSnapshot.icalUrl.trim();
+      const feeds = settingsSnapshot.calendarFeeds ?? [];
+      if (!feeds.some((f) => f.url === trimmedUrl)) {
+        feeds.push({
+          id: crypto.randomUUID(),
+          name: finalTitle || "Subscribed Calendar",
+          url: trimmedUrl,
+          color: "#0A84FF",
+          enabled: true,
+        });
+      }
+      settingsSnapshot.calendarFeeds = feeds;
+      settingsSnapshot.icalUrl = "";
+    }
+
     if (this.nodeModal.mode === "create") {
       const siblings =
         finalX === -1
@@ -2610,7 +2743,7 @@ class DashboardStore {
         url: isAction ? this.nodeModal.url.trim() : null,
         width,
         height,
-        settings: structuredClone($state.snapshot(this.nodeModal.settings)),
+        settings: settingsSnapshot,
         created_at: nowIso,
         updated_at: nowIso,
       };
@@ -2628,6 +2761,8 @@ class DashboardStore {
       if (!res.ok) {
         this.nodes = this.nodes.filter((n) => n.id !== optimisticNode.id);
         this.persistSnapshot();
+      } else if (optimisticNode.node_type === "calendar") {
+        void this.syncCalendarNodeNow(optimisticNode.id);
       }
     } else if (this.nodeModal.id) {
       const nodeId = this.nodeModal.id;
@@ -2640,13 +2775,13 @@ class DashboardStore {
         existing.grid_y = finalY;
         existing.width = width;
         existing.height = height;
-        existing.settings = structuredClone($state.snapshot(this.nodeModal.settings));
+        existing.settings = settingsSnapshot;
       }
 
       this.nodeModal.open = false;
       this.persistSnapshot();
 
-      void fetch(`/api/v1/nodes/${nodeId}`, {
+      const res = await fetch(`/api/v1/nodes/${nodeId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2657,9 +2792,13 @@ class DashboardStore {
           grid_y: finalY,
           width,
           height,
-          settings: this.nodeModal.settings,
+          settings: settingsSnapshot,
         }),
       });
+
+      if (res.ok && existing?.node_type === "calendar") {
+        void this.syncCalendarNodeNow(nodeId);
+      }
     }
 
     return null;
@@ -2675,6 +2814,9 @@ class DashboardStore {
     if (this.openFolderId === id) {
       this.openFolderId = null;
       this.isFolderClosing = false;
+    }
+    if (this.openCalendarNodeId === id) {
+      this.closeCalendarModal();
     }
     if (this.flippedNodeId === id) this.flippedNodeId = null;
     this.persistSnapshot();

@@ -16,12 +16,43 @@ export interface TodoItem {
   done: boolean;
 }
 
+export interface CalendarFeed {
+  id: string;
+  name: string;
+  url: string;
+  color: string;
+  enabled?: boolean;
+}
+
+export interface CalendarFeedSyncResult {
+  id: string;
+  name: string;
+  ok: boolean;
+  error?: string;
+  count: number;
+}
+
+export interface CalendarSyncStatus {
+  lastSyncedAt: string;
+  totalEvents: number;
+  feeds: CalendarFeedSyncResult[];
+}
+
 export interface CalendarEvent {
   id: string;
   title: string;
   time: string;
   date?: string; // ISO YYYY-MM-DD
   color?: string;
+  location?: string;
+  description?: string;
+  url?: string;
+  isAllDay?: boolean;
+  source?: "local" | "ical";
+  feedId?: string;
+  feedName?: string;
+  startIso?: string;
+  endIso?: string;
 }
 
 export interface WorldClockCity {
@@ -31,7 +62,7 @@ export interface WorldClockCity {
 }
 
 export interface NodeSettings {
-  // Clock widget settings
+  // Clock & Calendar shared timezone setting
   timezone?: string;
   flag?: string;
   clockFace?: "analog" | "digital";
@@ -44,6 +75,8 @@ export interface NodeSettings {
   todos?: TodoItem[];
   // Calendar widget settings
   events?: CalendarEvent[];
+  icalUrl?: string;
+  calendarFeeds?: CalendarFeed[];
 }
 
 export interface Workspace {

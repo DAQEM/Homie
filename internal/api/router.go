@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"homie/internal/crypto"
+	"homie/internal/integrations"
 	"homie/internal/models"
 	"homie/internal/state"
 
@@ -86,22 +87,30 @@ func (g *singleflightGroup) Do(key string, fn func() (any, error)) (any, error) 
 }
 
 type Server struct {
-	db         *gorm.DB
-	engine     *state.Engine
-	cipher     *crypto.EnvelopeCipher
-	frontendFS fs.FS
-	httpClient *http.Client
-	iconCache  sync.Map // map[string]cachedIcon
-	metaCache  sync.Map // map[string]urlMetaResponse
-	sf         singleflightGroup
+	db               *gorm.DB
+	engine           *state.Engine
+	cipher           *crypto.EnvelopeCipher
+	calendarProvider *integrations.CalendarProvider
+	frontendFS       fs.FS
+	httpClient       *http.Client
+	iconCache        sync.Map // map[string]cachedIcon
+	metaCache        sync.Map // map[string]urlMetaResponse
+	sf               singleflightGroup
 }
 
-func NewRouter(db *gorm.DB, engine *state.Engine, cipher *crypto.EnvelopeCipher, frontendFS fs.FS) http.Handler {
+func NewRouter(
+	db *gorm.DB,
+	engine *state.Engine,
+	cipher *crypto.EnvelopeCipher,
+	calendarProvider *integrations.CalendarProvider,
+	frontendFS fs.FS,
+) http.Handler {
 	s := &Server{
-		db:         db,
-		engine:     engine,
-		cipher:     cipher,
-		frontendFS: frontendFS,
+		db:               db,
+		engine:           engine,
+		cipher:           cipher,
+		calendarProvider: calendarProvider,
+		frontendFS:       frontendFS,
 		httpClient: &http.Client{
 			Timeout: 3500 * time.Millisecond,
 		},
@@ -126,6 +135,7 @@ func NewRouter(db *gorm.DB, engine *state.Engine, cipher *crypto.EnvelopeCipher,
 	mux.HandleFunc("POST /api/v1/nodes/reorder", s.handleReorderNodes)
 	mux.HandleFunc("PATCH /api/v1/nodes/{id}", s.handleUpdateNode)
 	mux.HandleFunc("DELETE /api/v1/nodes/{id}", s.handleDeleteNode)
+	mux.HandleFunc("POST /api/v1/nodes/{id}/calendar-sync", s.handleSyncCalendarNode)
 
 	// 4. Integration Management Endpoints (via GORM + AES-256-GCM)
 	mux.HandleFunc("GET /api/v1/integrations", s.handleListIntegrations)
@@ -585,6 +595,11 @@ func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = s.engine.RebuildSnapshot(r.Context())
+
+	if node.NodeType == "calendar" && s.calendarProvider != nil {
+		s.calendarProvider.TriggerSync()
+	}
+
 	writeJSON(w, http.StatusCreated, node)
 }
 
@@ -677,7 +692,33 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = s.engine.RebuildSnapshot(r.Context())
+
+	if node.NodeType == "calendar" && s.calendarProvider != nil {
+		s.calendarProvider.TriggerSync()
+	}
+
 	writeJSON(w, http.StatusOK, node)
+}
+
+func (s *Server) handleSyncCalendarNode(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "invalid node UUID", http.StatusBadRequest)
+		return
+	}
+
+	if s.calendarProvider == nil {
+		http.Error(w, "calendar provider unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	status, err := s.calendarProvider.SyncNodeNow(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, status)
 }
 
 func (s *Server) handleDeleteNode(w http.ResponseWriter, r *http.Request) {

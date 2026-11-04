@@ -103,9 +103,9 @@
         {
             type: "calendar",
             label: "Calendar",
-            subtitle: "Up next & month grid",
+            subtitle: "Google, Apple & .ics feeds",
             description:
-                "Glance at today's schedule alongside an interactive monthly calendar view.",
+                "Sync Google Calendar, Apple iCloud (webcal://), or Outlook .ics feeds alongside local events.",
             accent: "bg-[#FF453A]",
         },
         {
@@ -748,6 +748,33 @@
                                                 }
                                                 placeholder="🇳🇱"
                                                 class="w-full ios-input px-2.5 py-1.5 text-xs text-white text-center"
+                                            />
+                                        </label>
+                                    {:else if dashboard.nodeModal.node_type === "calendar"}
+                                        <label
+                                            class="col-span-2 block space-y-1"
+                                        >
+                                            <span
+                                                class="text-[10px] font-medium text-white/60 flex items-center justify-between"
+                                            >
+                                                <span>
+                                                    iCal / .ics Feed URL
+                                                    (Google, Apple, Outlook)
+                                                </span>
+                                                <span
+                                                    class="text-[9.5px] text-primary"
+                                                >
+                                                    Optional
+                                                </span>
+                                            </span>
+                                            <input
+                                                type="text"
+                                                bind:value={
+                                                    dashboard.nodeModal.settings
+                                                        .icalUrl
+                                                }
+                                                placeholder="https://calendar.google.com/calendar/ical/.../basic.ics or webcal://..."
+                                                class="w-full ios-input px-2.5 py-1.5 text-xs text-white placeholder:text-white/35 font-mono"
                                             />
                                         </label>
                                     {:else if dashboard.nodeModal.node_type === "search"}

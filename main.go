@@ -76,6 +76,9 @@ func main() {
 	// 4. Spawn supervised background integration workers
 	integrations.SpawnSupervised(ctx, integrations.NewHelloWorldProvider(), stateEngine, 5*time.Second)
 
+	calendarProvider := integrations.NewCalendarProvider(db, stateEngine)
+	integrations.SpawnSupervised(ctx, calendarProvider, stateEngine, 2*time.Minute)
+
 	// 5. Mount embedded frontend SPA assets and HTTP router
 	distFS, err := fs.Sub(frontendEmbedFS, "frontend/dist")
 	if err != nil {
@@ -83,7 +86,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	router := api.NewRouter(db, stateEngine, envelopeCipher, distFS)
+	router := api.NewRouter(db, stateEngine, envelopeCipher, calendarProvider, distFS)
 	srv := &http.Server{
 		Addr:              bindAddr,
 		Handler:           router,

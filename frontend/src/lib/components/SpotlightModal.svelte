@@ -55,7 +55,7 @@
         const lower = q.toLowerCase();
         const list: SpotlightResult[] = [];
 
-        // 1. Check Quick Commands (`todo: ...`, `remind: ...`, `event: ...`)
+        // 1. Check Quick Commands (`todo: ...`, `remind: ...`)
         if (lower.startsWith("todo:") || lower.startsWith("remind:")) {
             const taskText = q.replace(/^(todo|remind):\s*/i, "").trim();
             if (taskText) {
@@ -66,20 +66,6 @@
                     subtitle: "Instant iPadOS Reminders Quick Action",
                     execute: async () => {
                         await dashboard.quickAddReminder(taskText);
-                        dashboard.closeSpotlight();
-                    },
-                });
-            }
-        } else if (lower.startsWith("event:")) {
-            const evText = q.replace(/^event:\s*/i, "").trim();
-            if (evText) {
-                list.push({
-                    id: "cmd:event",
-                    kind: "command",
-                    title: `Add Calendar Event: "${evText}"`,
-                    subtitle: "Instant iPadOS Calendar Quick Action",
-                    execute: async () => {
-                        await dashboard.quickAddCalendarEvent(evText);
                         dashboard.closeSpotlight();
                     },
                 });
@@ -140,7 +126,7 @@
             }
         }
 
-        // 4. Filter Reminders & Calendar Events when query is non-empty
+        // 4. Filter Reminders & Synced .ics Calendar Events when query is non-empty
         if (lower.length > 0) {
             for (const n of dashboard.nodes) {
                 if (n.node_type === "todo" && n.settings?.todos) {
@@ -171,21 +157,29 @@
                             });
                         }
                     }
-                } else if (n.node_type === "calendar" && n.settings?.events) {
-                    for (const ev of n.settings.events) {
+                } else if (n.node_type === "calendar") {
+                    const calEvents = dashboard.getCalendarEventsForNode(n);
+                    for (const ev of calEvents) {
                         if (
                             ev.title.toLowerCase().includes(lower) ||
-                            ev.time.toLowerCase().includes(lower)
+                            ev.time.toLowerCase().includes(lower) ||
+                            (ev.location &&
+                                ev.location.toLowerCase().includes(lower))
                         ) {
+                            const datePart = ev.date ? `${ev.date} • ` : "";
+                            const feedPart = ev.feedName
+                                ? ` (${ev.feedName})`
+                                : "";
                             list.push({
                                 id: `cal:${ev.id}`,
                                 kind: "calendar",
                                 title: ev.title,
-                                subtitle: `${ev.time} • ${getWorkspaceName(n.workspace_id)}`,
+                                subtitle: `${datePart}${ev.time}${feedPart} • ${getWorkspaceName(n.workspace_id)}`,
                                 node: n,
                                 execute: () => {
-                                    dashboard.selectWorkspace(n.workspace_id);
                                     dashboard.closeSpotlight();
+                                    dashboard.selectWorkspace(n.workspace_id);
+                                    dashboard.openCalendarModal(n.id, ev.date);
                                 },
                             });
                         }
@@ -304,7 +298,7 @@
                     bind:value={query}
                     oninput={() => (selectedIndex = 0)}
                     onkeydown={handleKeydown}
-                    placeholder="Spotlight Search — apps, reminders, 'todo: task', or web..."
+                    placeholder="Spotlight Search — apps, calendar events, 'todo: task', or web..."
                     class="w-full bg-transparent text-base font-medium text-white placeholder:text-white/38 focus:outline-none"
                 />
                 <kbd
@@ -413,7 +407,8 @@
                 </div>
             {:else}
                 <div class="py-8 text-center text-xs text-white/40">
-                    Type to search apps, folders, reminders, or the web.
+                    Type to search apps, folders, calendar events, reminders, or
+                    the web.
                 </div>
             {/if}
 
