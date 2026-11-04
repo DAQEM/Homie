@@ -23,24 +23,25 @@
     }: Props = $props();
 
     const baseStyles =
-        "inline-flex items-center justify-center gap-2 font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:pointer-events-none disabled:opacity-50 rounded-xl cursor-pointer";
+        "inline-flex items-center justify-center gap-1.5 font-medium transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70 disabled:pointer-events-none disabled:opacity-45 rounded-full active:scale-[0.96] select-none cursor-pointer";
 
     const variants: Record<ButtonVariant, string> = {
-        default: "bg-primary text-primary-foreground hover:bg-primary/90",
+        default:
+            "bg-primary text-primary-foreground shadow-[inset_0_1px_0_0_rgba(255,255,255,0.28),0_4px_12px_-2px_rgba(10,132,255,0.45)] hover:brightness-110",
         secondary:
-            "bg-secondary text-secondary-foreground hover:bg-secondary/90",
+            "bg-white/12 text-foreground shadow-[inset_0_1px_0_0_rgba(255,255,255,0.16)] hover:bg-white/18",
         outline:
-            "border border-card-border bg-card text-card-foreground hover:border-primary hover:text-primary",
-        ghost: "hover:bg-primary hover:text-primary-foreground",
+            "bg-white/6 text-foreground shadow-[inset_0_0_0_0.5px_rgba(255,255,255,0.18)] hover:bg-white/12",
+        ghost: "text-foreground/80 hover:text-foreground hover:bg-white/10",
         destructive:
-            "bg-destructive text-destructive-foreground hover:bg-destructive/90",
+            "bg-destructive text-destructive-foreground shadow-[inset_0_1px_0_0_rgba(255,255,255,0.25),0_4px_12px_-2px_rgba(255,69,58,0.45)] hover:brightness-110",
     };
 
     const sizes: Record<ButtonSize, string> = {
         sm: "px-3 py-1 text-xs",
-        md: "px-4 py-2 text-sm",
-        lg: "px-6 py-3 text-base",
-        icon: "size-9",
+        md: "px-3.5 py-1.5 text-[13px]",
+        lg: "px-5 py-2.5 text-sm",
+        icon: "size-8",
     };
 </script>
 

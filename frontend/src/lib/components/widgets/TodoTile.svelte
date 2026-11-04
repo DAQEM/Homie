@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { ListTodo, Plus, Trash2, X } from "@lucide/svelte";
+    import { Check, Flag, ListTodo, Plus, Trash2 } from "@lucide/svelte";
     import { dashboard } from "../../state/dashboard.svelte";
     import type { DashboardNode, TodoItem } from "../../types";
 
@@ -10,11 +10,11 @@
     let { node }: Props = $props();
 
     let newText = $state("");
-    let newDate = $state("");
     let newPriority = $state(false);
-    let isAdding = $state(false);
 
     let todos = $derived<TodoItem[]>(node.settings?.todos ?? []);
+    let pendingCount = $derived(todos.filter((t) => !t.done).length);
+    let isCompact = $derived((node.width || 2) <= 2 && (node.height || 2) <= 2);
 
     async function toggleTodo(id: string) {
         const updated = todos.map((t) =>
@@ -42,7 +42,6 @@
         const item: TodoItem = {
             id: crypto.randomUUID(),
             text,
-            date: newDate.trim() || undefined,
             priority: newPriority,
             done: false,
         };
@@ -53,134 +52,123 @@
         });
 
         newText = "";
-        newDate = "";
         newPriority = false;
-        isAdding = false;
     }
 </script>
 
 <div
-    class="w-full h-full bg-card text-card-foreground border-[1.2px] border-card-border shadow-md rounded-xl p-4 flex flex-col gap-3 overflow-hidden"
+    class="w-full h-full ios-widget-surface p-3.5 flex flex-col gap-2 overflow-hidden select-none"
 >
-    <div
-        class="flex items-center justify-between border-b border-card-border pb-2.5 shrink-0"
-    >
+    <!-- iPadOS Reminders Header: Circular Icon + Title on Left, Large Bold Count on Right -->
+    <div class="flex items-center justify-between gap-2 shrink-0">
         <div class="flex items-center gap-2 min-w-0">
-            <ListTodo class="size-4 text-primary shrink-0" />
-            <span class="text-sm font-semibold truncate">{node.title}</span>
+            <div
+                class="size-6 rounded-full bg-primary flex items-center justify-center shadow-[0_2px_8px_rgba(10,132,255,0.45)] shrink-0"
+            >
+                <ListTodo class="size-3.5 text-white stroke-[2.5]" />
+            </div>
+            <span
+                class="text-[13px] font-bold text-primary ios-tight-tracking truncate"
+            >
+                {node.title}
+            </span>
         </div>
-        <button
-            type="button"
-            onclick={() => (isAdding = !isAdding)}
-            class="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer {isAdding
-                ? 'bg-background text-foreground/70 hover:text-foreground border border-card-border'
-                : 'bg-primary text-primary-foreground hover:bg-primary/90'}"
+
+        <span
+            class="text-2xl font-bold text-white ios-tabular-nums ios-tight-tracking leading-none"
         >
-            {#if isAdding}
-                <X class="size-3" />
-                Cancel
-            {:else}
-                <Plus class="size-3" />
-                Task
-            {/if}
-        </button>
+            {pendingCount}
+        </span>
     </div>
 
-    {#if isAdding}
-        <form
-            onsubmit={addTodo}
-            class="bg-background/80 border border-card-border rounded-xl p-2.5 space-y-2 text-xs shrink-0"
-        >
-            <input
-                type="text"
-                required
-                bind:value={newText}
-                placeholder="Task name..."
-                class="w-full bg-card border border-card-border focus:border-primary rounded-lg px-2.5 py-1.5 text-xs text-foreground placeholder:text-foreground/40 focus:outline-none"
-            />
-            <div class="flex items-center gap-1.5">
-                <input
-                    type="text"
-                    bind:value={newDate}
-                    placeholder="Date (e.g. 12 Mar)"
-                    class="flex-1 min-w-0 bg-card border border-card-border focus:border-primary rounded-lg px-2 py-1 text-[11px] text-foreground placeholder:text-foreground/40 focus:outline-none"
-                />
-                <label
-                    class="flex items-center gap-1.5 text-[11px] bg-card border border-card-border rounded-lg px-2 py-1 cursor-pointer select-none"
-                >
-                    <input
-                        type="checkbox"
-                        bind:checked={newPriority}
-                        class="accent-primary"
-                    />
-                    Priority
-                </label>
-                <button
-                    type="submit"
-                    class="bg-secondary text-secondary-foreground hover:bg-secondary/90 rounded-lg px-2.5 py-1 text-[11px] font-semibold cursor-pointer transition-colors"
-                >
-                    Add
-                </button>
-            </div>
-        </form>
-    {/if}
-
-    <div class="flex-1 min-h-0 overflow-y-auto divide-y divide-card-border/60">
+    <!-- Reminders List with Circular iOS Completion Rings -->
+    <div
+        class="flex-1 min-h-0 overflow-y-auto divide-y divide-white/[0.07] pr-0.5"
+    >
         {#each todos as item (item.id)}
-            <div class="py-2 flex items-start justify-between gap-2 group">
-                <label
-                    class="flex items-start gap-2.5 cursor-pointer min-w-0 flex-1"
+            <div class="py-1.5 flex items-center justify-between gap-2 group">
+                <button
+                    type="button"
+                    onclick={() => toggleTodo(item.id)}
+                    class="flex items-center gap-2.5 min-w-0 flex-1 text-left cursor-pointer"
                 >
-                    <input
-                        type="checkbox"
-                        checked={item.done}
-                        onchange={() => toggleTodo(item.id)}
-                        class="mt-0.5 shrink-0 accent-primary rounded"
-                    />
-                    <div class="min-w-0 flex-1 space-y-1">
-                        <div
-                            class="text-xs truncate transition-colors {item.done
-                                ? 'line-through text-foreground/40'
-                                : 'text-foreground'}"
-                        >
-                            {item.text}
-                        </div>
-                        {#if item.date || item.priority}
-                            <div class="flex flex-wrap gap-1">
-                                {#if item.date}
-                                    <span
-                                        class="bg-background border border-card-border text-foreground/70 rounded-md px-1.5 py-0.5 text-[10px]"
-                                    >
-                                        {item.date}
-                                    </span>
-                                {/if}
-                                {#if item.priority}
-                                    <span
-                                        class="bg-primary/20 text-primary border border-primary/30 rounded-md px-1.5 py-0.5 text-[10px] font-medium"
-                                    >
-                                        Priority
-                                    </span>
-                                {/if}
-                            </div>
+                    <!-- Circular iOS Reminder Ring -->
+                    <span
+                        class="size-4.5 rounded-full border-[1.75px] flex items-center justify-center shrink-0 transition-all duration-150 {item.done
+                            ? item.priority
+                                ? 'bg-[#FF9F0A] border-[#FF9F0A] scale-95'
+                                : 'bg-primary border-primary scale-95'
+                            : item.priority
+                              ? 'border-[#FF9F0A] hover:bg-[#FF9F0A]/15'
+                              : 'border-white/35 hover:border-primary'}"
+                    >
+                        {#if item.done}
+                            <Check class="size-2.5 text-white stroke-[3]" />
                         {/if}
-                    </div>
-                </label>
+                    </span>
+
+                    <span
+                        class="text-xs font-medium truncate transition-colors {item.done
+                            ? 'line-through text-white/35'
+                            : 'text-white/92'}"
+                    >
+                        {item.text}
+                    </span>
+
+                    {#if item.priority && !item.done}
+                        <Flag
+                            class="size-3 text-[#FF9F0A] fill-[#FF9F0A] shrink-0"
+                        />
+                    {/if}
+                    {#if item.date && !isCompact}
+                        <span
+                            class="text-[10px] text-white/45 ios-tabular-nums shrink-0"
+                        >
+                            {item.date}
+                        </span>
+                    {/if}
+                </button>
 
                 <button
                     type="button"
                     onclick={() => removeTodo(item.id)}
-                    class="text-foreground/40 hover:text-destructive p-1 rounded-md transition-colors shrink-0 cursor-pointer"
-                    title="Delete task"
+                    class="opacity-0 group-hover:opacity-100 text-white/35 hover:text-destructive p-0.5 rounded transition-all shrink-0 cursor-pointer"
+                    title="Delete reminder"
                 >
-                    <Trash2 class="size-3.5" />
+                    <Trash2 class="size-3" />
                 </button>
             </div>
         {:else}
             <div
-                class="h-full flex items-center justify-center text-xs text-foreground/40 py-4"
+                class="h-full flex items-center justify-center text-xs text-white/35"
             >
-                No tasks yet.
+                All reminders completed
             </div>
         {/each}
     </div>
+
+    <!-- Persistent Whisper-Quiet Inline Quick Add Bar -->
+    <form
+        onsubmit={addTodo}
+        class="pt-1.5 border-t border-white/[0.08] flex items-center gap-1.5 shrink-0"
+    >
+        <Plus class="size-3.5 text-white/40 shrink-0" />
+        <input
+            type="text"
+            bind:value={newText}
+            placeholder="New Reminder..."
+            disabled={dashboard.isEditMode}
+            class="flex-1 min-w-0 bg-transparent text-xs text-white placeholder:text-white/35 focus:outline-none"
+        />
+        <button
+            type="button"
+            onclick={() => (newPriority = !newPriority)}
+            title="Toggle Priority Flag"
+            class="px-1.5 py-0.5 rounded-full text-[10px] font-bold transition-colors cursor-pointer {newPriority
+                ? 'bg-[#FF9F0A]/25 text-[#FF9F0A]'
+                : 'text-white/35 hover:text-white/70'}"
+        >
+            !
+        </button>
+    </form>
 </div>

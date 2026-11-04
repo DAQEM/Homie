@@ -1,16 +1,389 @@
 @import "tailwindcss";
 
 @theme {
-  --color-primary: #bb86fc;
-  --color-primary-foreground: #000000;
-  --color-variant: #3700b3;
-  --color-secondary: #03dac6;
-  --color-secondary-foreground: #000000;
-  --color-background: #121212;
-  --color-foreground: #ffffff;
-  --color-card: #1e1e1e;
-  --color-card-foreground: #ffffff;
-  --color-card-border: #2e2e2e;
-  --color-destructive: #cf6679;
-  --color-destructive-foreground: #000000;
+  /* Apple SF Pro System Font Stack */
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", system-ui,
+    sans-serif;
+  --font-mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  /* iPadOS Dark System Palette & Vibrancy Tokens */
+  --color-primary: #0a84ff;
+  --color-primary-foreground: #ffffff;
+  --color-variant: #0060df;
+  --color-secondary: #64d2ff;
+  --color-secondary-foreground: #001d29;
+  --color-accent-green: #30d158;
+  --color-accent-orange: #ff9f0a;
+  --color-accent-purple: #bf5af2;
+  --color-background: #07080d;
+  --color-foreground: #f5f5f7;
+  --color-card: rgba(28, 28, 34, 0.66);
+  --color-card-foreground: #f5f5f7;
+  --color-card-border: rgba(255, 255, 255, 0.11);
+  --color-destructive: #ff453a;
+  --color-destructive-foreground: #ffffff;
+}
+
+@layer base {
+  :root {
+    --radius-squircle-xl: 26px;
+    --radius-squircle-lg: 22px;
+    --radius-squircle-md: 16px;
+    --radius-squircle-sm: 12px;
+    --radius-squircle-xs: 9px;
+
+    --ease-apple-spring: cubic-bezier(0.22, 1, 0.36, 1);
+    --ease-apple-snappy: cubic-bezier(0.32, 0.72, 0, 1);
+  }
+
+  html {
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    letter-spacing: -0.011em;
+  }
+
+  h1,
+  h2,
+  h3,
+  .ios-tight-tracking {
+    letter-spacing: -0.022em;
+  }
+
+  .ios-tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* ==========================================================================
+   Tier 1: Ultra-Thin Liquid Glass (Dock, Floating Bars, Modal Sheets)
+   ========================================================================== */
+.ios-glass-dock {
+  background: linear-gradient(180deg, rgba(46, 48, 58, 0.62) 0%, rgba(24, 25, 32, 0.72) 100%);
+  backdrop-filter: blur(32px) saturate(195%);
+  -webkit-backdrop-filter: blur(32px) saturate(195%);
+  border-radius: var(--radius-squircle-xl);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.22),
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.14),
+    0 20px 45px -12px rgba(0, 0, 0, 0.65),
+    0 4px 14px 0 rgba(0, 0, 0, 0.35);
+}
+
+.ios-modal-surface {
+  background: linear-gradient(180deg, rgba(42, 44, 54, 0.78) 0%, rgba(22, 23, 30, 0.86) 100%);
+  backdrop-filter: blur(36px) saturate(190%);
+  -webkit-backdrop-filter: blur(36px) saturate(190%);
+  border-radius: var(--radius-squircle-xl);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.2),
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.14),
+    0 28px 70px -10px rgba(0, 0, 0, 0.75),
+    0 8px 24px 0 rgba(0, 0, 0, 0.4);
+}
+
+.ios-glass-pill {
+  background: rgba(38, 40, 50, 0.58);
+  backdrop-filter: blur(20px) saturate(185%);
+  -webkit-backdrop-filter: blur(20px) saturate(185%);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.18),
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.11),
+    0 6px 18px -4px rgba(0, 0, 0, 0.4);
+}
+
+/* ==========================================================================
+   Tier 2: iPadOS Widget & App Squircle Material (Top-Level Grid Nodes)
+   ========================================================================== */
+.ios-widget-surface {
+  background: linear-gradient(165deg, rgba(40, 42, 52, 0.68) 0%, rgba(22, 23, 30, 0.74) 100%);
+  backdrop-filter: blur(22px) saturate(180%);
+  -webkit-backdrop-filter: blur(22px) saturate(180%);
+  border-radius: var(--radius-squircle-lg);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.16),
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.1),
+    0 12px 28px -8px rgba(0, 0, 0, 0.48),
+    0 2px 6px 0 rgba(0, 0, 0, 0.24);
+  transition:
+    transform 240ms var(--ease-apple-spring),
+    background 240ms var(--ease-apple-spring),
+    box-shadow 240ms var(--ease-apple-spring);
+}
+
+.ios-widget-surface:hover {
+  background: linear-gradient(165deg, rgba(48, 50, 62, 0.73) 0%, rgba(26, 28, 36, 0.78) 100%);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.22),
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.15),
+    0 16px 34px -8px rgba(0, 0, 0, 0.55),
+    0 4px 10px 0 rgba(0, 0, 0, 0.3);
+}
+
+.ios-icon-surface {
+  background: linear-gradient(165deg, rgba(46, 48, 60, 0.72) 0%, rgba(24, 26, 34, 0.8) 100%);
+  backdrop-filter: blur(18px) saturate(180%);
+  -webkit-backdrop-filter: blur(18px) saturate(180%);
+  border-radius: var(--radius-squircle-md);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.2),
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.12),
+    0 8px 20px -6px rgba(0, 0, 0, 0.5),
+    0 2px 5px 0 rgba(0, 0, 0, 0.28);
+  transition:
+    transform 220ms var(--ease-apple-spring),
+    background 220ms var(--ease-apple-spring),
+    box-shadow 220ms var(--ease-apple-spring);
+}
+
+.group:hover .ios-icon-surface {
+  transform: translateY(-2px) scale(1.03);
+  background: linear-gradient(165deg, rgba(56, 58, 72, 0.8) 0%, rgba(30, 32, 42, 0.86) 100%);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.28),
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.18),
+    0 12px 24px -6px rgba(0, 0, 0, 0.58),
+    0 4px 8px 0 rgba(0, 0, 0, 0.32);
+}
+
+.group:active .ios-icon-surface {
+  transform: scale(0.95);
+}
+
+/* ==========================================================================
+   Tier 3: Nested Surfaces & GPU Blur Budget Guardrails (0 Nested Blur Passes)
+   ========================================================================== */
+.ios-glass-dock .ios-icon-surface,
+.ios-widget-surface .ios-icon-surface,
+.ios-modal-surface .ios-icon-surface {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: linear-gradient(165deg, rgba(255, 255, 255, 0.13) 0%, rgba(255, 255, 255, 0.06) 100%);
+}
+
+.ios-glass-dock .group:hover .ios-icon-surface,
+.ios-widget-surface .group:hover .ios-icon-surface,
+.ios-modal-surface .group:hover .ios-icon-surface {
+  background: linear-gradient(165deg, rgba(255, 255, 255, 0.2) 0%, rgba(255, 255, 255, 0.1) 100%);
+}
+
+.ios-nested-surface {
+  background: rgba(255, 255, 255, 0.055);
+  border-radius: var(--radius-squircle-sm);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.08),
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.07);
+  transition: background 180ms ease;
+}
+
+.ios-nested-surface:hover {
+  background: rgba(255, 255, 255, 0.085);
+}
+
+.ios-input {
+  background: rgba(0, 0, 0, 0.28);
+  border-radius: var(--radius-squircle-sm);
+  box-shadow:
+    inset 0 1px 2px 0 rgba(0, 0, 0, 0.35),
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.12);
+  transition:
+    box-shadow 180ms var(--ease-apple-spring),
+    background 180ms var(--ease-apple-spring);
+}
+
+.ios-input:focus {
+  background: rgba(0, 0, 0, 0.4);
+  outline: none;
+  box-shadow:
+    inset 0 1px 2px 0 rgba(0, 0, 0, 0.4),
+    0 0 0 2.5px rgba(10, 132, 255, 0.45),
+    inset 0 0 0 0.5px rgba(10, 132, 255, 0.8);
+}
+
+.ios-label-shadow {
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.78);
+}
+
+/* ==========================================================================
+   Step 3: iPadOS Jiggle Mode & Magnetic Ghost Placeholder
+   ========================================================================== */
+@keyframes ios-jiggle-keyframes {
+  0% {
+    transform: rotate(-1.15deg) translate3d(-0.4px, 0.3px, 0);
+  }
+  25% {
+    transform: rotate(0.2deg) translate3d(0.3px, -0.4px, 0);
+  }
+  50% {
+    transform: rotate(1.15deg) translate3d(0.4px, 0.2px, 0);
+  }
+  75% {
+    transform: rotate(-0.15deg) translate3d(-0.3px, -0.3px, 0);
+  }
+  100% {
+    transform: rotate(-1.15deg) translate3d(-0.4px, 0.3px, 0);
+  }
+}
+
+@keyframes ios-jiggle-widget-keyframes {
+  0% {
+    transform: rotate(-0.55deg) translate3d(-0.3px, 0.2px, 0);
+  }
+  50% {
+    transform: rotate(0.55deg) translate3d(0.3px, -0.2px, 0);
+  }
+  100% {
+    transform: rotate(-0.55deg) translate3d(-0.3px, 0.2px, 0);
+  }
+}
+
+.ios-jiggle-icon {
+  animation-name: ios-jiggle-keyframes;
+  animation-iteration-count: infinite;
+  animation-timing-function: ease-in-out;
+  transform-origin: 50% 50%;
+  will-change: transform;
+}
+
+.ios-jiggle-widget {
+  animation-name: ios-jiggle-widget-keyframes;
+  animation-iteration-count: infinite;
+  animation-timing-function: ease-in-out;
+  transform-origin: 50% 50%;
+  will-change: transform;
+}
+
+.ios-drop-ghost {
+  background: radial-gradient(
+    circle at 50% 30%,
+    rgba(255, 255, 255, 0.14) 0%,
+    rgba(10, 132, 255, 0.1) 100%
+  );
+  border-radius: var(--radius-squircle-lg);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.28),
+    inset 0 0 0 1.5px rgba(255, 255, 255, 0.22),
+    0 12px 32px -4px rgba(10, 132, 255, 0.22);
+  transition: all 180ms var(--ease-apple-spring);
+}
+
+/* ==========================================================================
+   Step 5: 3D Flip-Card Widget Inspector, Morphing Folders & Context Menus
+   ========================================================================== */
+.ios-flip-scene {
+  perspective: 1200px;
+}
+
+.ios-flip-card {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  transform-style: preserve-3d;
+  transition: transform 520ms var(--ease-apple-spring);
+}
+
+.ios-flip-card.is-flipped {
+  transform: rotateY(180deg) scale(1.02);
+}
+
+.ios-flip-face {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+.ios-flip-face-back {
+  transform: rotateY(180deg);
+}
+
+@keyframes ios-folder-morph-in {
+  from {
+    opacity: 0;
+    transform: translate3d(var(--folder-dx, 0px), var(--folder-dy, 0px), 0) scale(0.2);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+.ios-folder-morph {
+  animation: ios-folder-morph-in 380ms var(--ease-apple-spring) both;
+}
+
+@keyframes ios-context-menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.86) translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.ios-context-menu {
+  animation: ios-context-menu-in 200ms var(--ease-apple-spring) both;
+}
+
+/* ==========================================================================
+   Spatial Home Screen Page Spring Transitions
+   ========================================================================== */
+@keyframes ios-page-enter-right {
+  from {
+    opacity: 0;
+    transform: translate3d(42px, 0, 0) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes ios-page-enter-left {
+  from {
+    opacity: 0;
+    transform: translate3d(-42px, 0, 0) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+.ios-page-slide-right {
+  animation: ios-page-enter-right 340ms var(--ease-apple-spring) both;
+}
+
+.ios-page-slide-left {
+  animation: ios-page-enter-left 340ms var(--ease-apple-spring) both;
+}
+
+/* Subtle iPadOS Scrollbars inside Widgets */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 9999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.32);
 }

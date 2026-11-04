@@ -14,16 +14,18 @@
 
 {#if dashboard.isWorkspaceModalOpen}
     <div
-        class="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+        class="fixed inset-0 z-50 bg-black/55 backdrop-blur-md flex items-center justify-center p-4"
     >
         <form
             onsubmit={handleSubmit}
-            class="max-w-sm w-full bg-card text-card-foreground border-[1.2px] border-card-border rounded-2xl shadow-2xl p-6 space-y-4"
+            class="max-w-sm w-full ios-modal-surface text-card-foreground p-6 space-y-4"
         >
             <div
-                class="flex items-center justify-between border-b border-card-border pb-3"
+                class="flex items-center justify-between border-b border-white/10 pb-3.5"
             >
-                <h3 class="text-base font-bold">New Workspace</h3>
+                <h3 class="text-base font-semibold ios-tight-tracking">
+                    New Workspace
+                </h3>
                 <Button
                     variant="ghost"
                     size="icon"
@@ -34,7 +36,7 @@
             </div>
 
             <label class="block space-y-1.5">
-                <span class="text-xs font-medium text-foreground/70 block">
+                <span class="text-xs font-medium text-white/70 block">
                     Workspace Name
                 </span>
                 <input
@@ -42,13 +44,11 @@
                     required
                     bind:value={name}
                     placeholder="e.g. Home, Work, Media"
-                    class="w-full bg-background border border-card-border focus:border-primary rounded-xl px-3 py-2 text-sm text-foreground placeholder:text-foreground/40 focus:outline-none transition-colors"
+                    class="w-full ios-input px-3 py-2 text-sm text-white placeholder:text-white/35"
                 />
             </label>
 
-            <div
-                class="flex justify-end gap-2 pt-2 border-t border-card-border"
-            >
+            <div class="flex justify-end gap-2 pt-3 border-t border-white/10">
                 <Button
                     variant="ghost"
                     onclick={() => (dashboard.isWorkspaceModalOpen = false)}

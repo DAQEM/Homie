@@ -2,7 +2,6 @@
     import { Search } from "@lucide/svelte";
     import { dashboard } from "../../state/dashboard.svelte";
     import type { DashboardNode } from "../../types";
-    import Button from "../ui/Button.svelte";
 
     interface Props {
         node: DashboardNode;
@@ -12,7 +11,7 @@
     let query = $state("");
 
     let placeholder = $derived(
-        node.settings?.placeholder || "Search the Web...",
+        node.settings?.placeholder || "Search Web or Spotlight (⌘K)...",
     );
     let engineUrl = $derived(
         node.settings?.engineUrl || "https://www.google.com/search?q=",
@@ -22,7 +21,10 @@
         e.preventDefault();
         if (dashboard.isEditMode) return;
         const trimmed = query.trim();
-        if (!trimmed) return;
+        if (!trimmed) {
+            dashboard.openSpotlight();
+            return;
+        }
 
         if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
             window.open(trimmed, "_blank", "noopener,noreferrer");
@@ -39,22 +41,22 @@
 
 <form
     onsubmit={handleSubmit}
-    class="w-full h-full bg-card text-card-foreground border-[1.2px] border-card-border focus-within:border-primary shadow-md rounded-xl px-4 flex items-center gap-3 overflow-hidden transition-colors"
+    class="w-full h-full ios-widget-surface focus-within:ring-2 focus-within:ring-primary/65 px-4 flex items-center gap-3 overflow-hidden"
 >
-    <Search class="size-4 text-primary shrink-0" />
+    <Search class="size-4.5 text-white/60 shrink-0" />
     <input
         type="text"
         bind:value={query}
         {placeholder}
         disabled={dashboard.isEditMode}
-        class="w-full h-full text-sm text-foreground placeholder:text-foreground/40 focus:outline-none bg-transparent"
+        class="w-full h-full text-sm font-medium text-white placeholder:text-white/40 focus:outline-none bg-transparent"
     />
-    <Button
-        type="submit"
-        size="sm"
-        disabled={dashboard.isEditMode}
-        class="shrink-0"
+    <button
+        type="button"
+        onclick={() => dashboard.openSpotlight(query)}
+        title="Open iPadOS Spotlight (⌘K)"
+        class="hidden sm:inline-flex items-center gap-0.5 px-2 py-0.5 rounded-md bg-white/10 hover:bg-white/20 text-[10px] font-semibold text-white/65 hover:text-white transition-colors shrink-0 select-none cursor-pointer"
     >
-        Go
-    </Button>
+        ⌘K
+    </button>
 </form>

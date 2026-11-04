@@ -1,13 +1,19 @@
 package api
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"mime"
 	"net/http"
+	"net/url"
 	"path"
 	"strings"
+	"sync"
+	"time"
 
 	"homie/internal/crypto"
 	"homie/internal/models"
@@ -20,11 +26,19 @@ import (
 // Max base64 string length for a 100KB binary image (~137KB + data URI header).
 const maxCustomIconLength = 150_000
 
+type cachedIcon struct {
+	data        []byte
+	contentType string
+	etag        string
+}
+
 type Server struct {
 	db         *gorm.DB
 	engine     *state.Engine
 	cipher     *crypto.EnvelopeCipher
 	frontendFS fs.FS
+	httpClient *http.Client
+	iconCache  sync.Map // map[string]cachedIcon
 }
 
 func NewRouter(db *gorm.DB, engine *state.Engine, cipher *crypto.EnvelopeCipher, frontendFS fs.FS) http.Handler {
@@ -33,13 +47,17 @@ func NewRouter(db *gorm.DB, engine *state.Engine, cipher *crypto.EnvelopeCipher,
 		engine:     engine,
 		cipher:     cipher,
 		frontendFS: frontendFS,
+		httpClient: &http.Client{
+			Timeout: 4 * time.Second,
+		},
 	}
 
 	mux := http.NewServeMux()
 
-	// 1. State Synchronization Endpoints
+	// 1. State Synchronization & High-Speed Asset Endpoints
 	mux.HandleFunc("GET /api/v1/bootstrap", s.handleBootstrap)
 	mux.HandleFunc("GET /api/v1/live", s.handleLiveSSE)
+	mux.HandleFunc("GET /api/v1/icons/{domain}", s.handleGetDomainIcon)
 
 	// 2. Workspace Management Endpoints
 	mux.HandleFunc("GET /api/v1/workspaces", s.handleListWorkspaces)
@@ -120,6 +138,79 @@ func (s *Server) handleLiveSSE(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleGetDomainIcon proxies and caches 128px app icons in RAM so the client
+// renders squircle icons in <50µs with immutable browser caching.
+func (s *Server) handleGetDomainIcon(w http.ResponseWriter, r *http.Request) {
+	domain := strings.ToLower(strings.TrimSpace(r.PathValue("domain")))
+	if domain == "" || strings.Contains(domain, "/") {
+		http.NotFound(w, r)
+		return
+	}
+
+	if val, ok := s.iconCache.Load(domain); ok {
+		entry := val.(cachedIcon)
+		if inm := r.Header.Get("If-None-Match"); inm != "" && inm == entry.etag {
+			w.Header().Set("ETag", entry.etag)
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("Content-Type", entry.contentType)
+		w.Header().Set("ETag", entry.etag)
+		w.Header().Set("Cache-Control", "public, max-age=604800, immutable")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(entry.data)
+		return
+	}
+
+	upstreamURL := fmt.Sprintf(
+		"https://www.google.com/s2/favicons?domain=%s&sz=128",
+		url.QueryEscape(domain),
+	)
+
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, upstreamURL, nil)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		http.NotFound(w, r)
+		return
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	if err != nil || len(data) == 0 {
+		http.NotFound(w, r)
+		return
+	}
+
+	contentType := resp.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = http.DetectContentType(data)
+	}
+
+	sum := sha256.Sum256(data)
+	etag := fmt.Sprintf(`"%s"`, hex.EncodeToString(sum[:12]))
+
+	entry := cachedIcon{
+		data:        data,
+		contentType: contentType,
+		etag:        etag,
+	}
+	s.iconCache.Store(domain, entry)
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "public, max-age=604800, immutable")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
 func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
 	var workspaces []models.Workspace
 	if err := s.db.WithContext(r.Context()).Order("created_at ASC").Find(&workspaces).Error; err != nil {
@@ -131,7 +222,8 @@ func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		Name string `json:"name"`
+		ID   *uuid.UUID `json:"id"`
+		Name string     `json:"name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil || strings.TrimSpace(input.Name) == "" {
 		http.Error(w, "valid workspace name is required", http.StatusBadRequest)
@@ -141,6 +233,10 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	ws := models.Workspace{
 		Name: strings.TrimSpace(input.Name),
 	}
+	if input.ID != nil && *input.ID != uuid.Nil {
+		ws.ID = *input.ID
+	}
+
 	if err := s.db.WithContext(r.Context()).Create(&ws).Error; err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -177,6 +273,7 @@ func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 	var input struct {
+		ID          *uuid.UUID      `json:"id"`
 		WorkspaceID uuid.UUID       `json:"workspace_id"`
 		ParentID    *uuid.UUID      `json:"parent_id"`
 		SortOrder   int32           `json:"sort_order"`
@@ -231,6 +328,9 @@ func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 		Width:       input.Width,
 		Height:      input.Height,
 		Settings:    input.Settings,
+	}
+	if input.ID != nil && *input.ID != uuid.Nil {
+		node.ID = *input.ID
 	}
 
 	if err := s.db.WithContext(r.Context()).Create(&node).Error; err != nil {
