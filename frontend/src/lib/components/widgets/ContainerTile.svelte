@@ -12,14 +12,29 @@
     interface Props {
         node: DashboardNode;
         inDock?: boolean;
+        staticPreview?: boolean;
     }
 
-    let { node, inDock = false }: Props = $props();
+    let { node, inDock = false, staticPreview = false }: Props = $props();
+
+    let squircleEl: HTMLDivElement | undefined = $state();
+
+    $effect(() => {
+        if (squircleEl && !staticPreview) {
+            dashboard.registerFolderAnchor(node.id, squircleEl);
+            return () => dashboard.registerFolderAnchor(node.id, null);
+        }
+    });
 
     let children = $derived(dashboard.getChildren(node.id));
     let capacity = $derived((node.width || 1) * (node.height || 1));
     let hasOverflow = $derived(children.length > capacity);
     let isMergeTarget = $derived(dashboard.folderMergeTargetId === node.id);
+    let isExpandedOpen = $derived(
+        !staticPreview &&
+            dashboard.openFolderId === node.id &&
+            !dashboard.isFolderClosing,
+    );
 
     let directItems = $derived(
         hasOverflow
@@ -32,7 +47,7 @@
     );
 
     function handleOpenFolder(e: MouseEvent | KeyboardEvent) {
-        const el = e.currentTarget as HTMLElement | null;
+        const el = squircleEl ?? (e.currentTarget as HTMLElement | null);
         dashboard.openFolderWithOrigin(node.id, el);
     }
 </script>
@@ -70,7 +85,9 @@
         onkeydown={(e) => e.key === "Enter" && handleOpenFolder(e)}
         class="group relative w-full h-full flex flex-col items-center {inDock
             ? 'justify-center'
-            : 'justify-center gap-1.5'} cursor-pointer text-center select-none"
+            : 'justify-center gap-1.5'} cursor-pointer text-center select-none transition-all duration-200 {isExpandedOpen
+            ? 'opacity-0 scale-75'
+            : 'opacity-100 scale-100'}"
     >
         {#if inDock}
             <span
@@ -80,19 +97,43 @@
             </span>
         {/if}
 
+        {#if isMergeTarget}
+            <div
+                class="pointer-events-none absolute inset-0 -m-1.5 rounded-[22px] bg-primary/25 backdrop-blur-md ring-2 ring-primary scale-105 transition-all duration-200 z-0"
+            ></div>
+        {/if}
+
         <div
-            class="{inDock
-                ? 'size-14 rounded-[15px]'
-                : 'size-[62px] rounded-[16px]'} shrink-0 ios-icon-surface p-2 overflow-hidden transition-transform {isMergeTarget
-                ? 'scale-110 ring-2 ring-white/80'
+            bind:this={squircleEl}
+            class="relative z-10 {inDock
+                ? 'size-14'
+                : 'size-[62px]'} shrink-0 ios-squircle-shadow {isMergeTarget
+                ? 'scale-105'
                 : ''}"
         >
-            {@render miniCluster(children.slice(0, 4))}
+            <div
+                class="w-full h-full ios-icon-surface p-2 overflow-hidden relative"
+            >
+                {@render miniCluster(children.slice(0, 4))}
+
+                <svg
+                    aria-hidden="true"
+                    viewBox="0 0 100 100"
+                    class="pointer-events-none absolute inset-0 w-full h-full z-20"
+                >
+                    <path
+                        d="M 50,1 C 81.5,1 88.5,1 93.8,6.2 C 99,11.5 99,18.5 99,50 C 99,81.5 99,88.5 93.8,93.8 C 88.5,99 81.5,99 50,99 C 18.5,99 11.5,99 6.2,93.8 C 1,88.5 1,81.5 1,50 C 1,18.5 1,11.5 6.2,6.2 C 11.5,1 18.5,1 50,1 Z"
+                        fill="none"
+                        stroke="url(#ios-g2-rim)"
+                        stroke-width="2"
+                    />
+                </svg>
+            </div>
         </div>
 
-        {#if !inDock}
+        {#if !inDock && dashboard.showIconLabels}
             <span
-                class="text-[11.5px] font-medium text-white/92 group-hover:text-white transition-colors truncate max-w-[84px] shrink-0 leading-tight ios-label-shadow"
+                class="relative z-10 text-[11.5px] font-medium ios-vibrant-label group-hover:text-white transition-colors truncate max-w-[84px] shrink-0 leading-tight"
             >
                 {node.title}
             </span>
@@ -100,7 +141,7 @@
     </div>
 {:else}
     <div class="relative w-full h-full flex flex-col gap-1.5 overflow-hidden">
-        {#if dashboard.isEditMode}
+        {#if dashboard.isEditMode && !staticPreview}
             <button
                 type="button"
                 onclick={(e) => {
@@ -115,8 +156,8 @@
         {/if}
 
         <div
-            class="w-full flex-1 min-h-0 ios-widget-surface p-3 overflow-hidden transition-transform {isMergeTarget
-                ? 'ring-2 ring-white/80 scale-[1.02]'
+            class="w-full flex-1 min-h-0 ios-widget-surface p-3 overflow-hidden transition-all duration-200 {isMergeTarget
+                ? 'ring-2 ring-primary bg-primary/15 scale-[1.02]'
                 : ''}"
         >
             <div
@@ -124,13 +165,19 @@
                 class="grid gap-2.5 w-full h-full"
             >
                 {#each directItems as child (child.id)}
-                    <SortableNode
-                        node={child}
-                        inContainer={true}
-                        showResizeBadge={false}
-                    >
-                        <ActionTile node={child} />
-                    </SortableNode>
+                    {#if staticPreview}
+                        <div class="w-full h-full">
+                            <ActionTile node={child} />
+                        </div>
+                    {:else}
+                        <SortableNode
+                            node={child}
+                            inContainer={true}
+                            showResizeBadge={false}
+                        >
+                            <ActionTile node={child} />
+                        </SortableNode>
+                    {/if}
                 {/each}
 
                 {#if hasOverflow}
@@ -141,24 +188,33 @@
                         class="group w-full h-full flex flex-col items-center justify-center gap-1.5 cursor-pointer text-center overflow-hidden"
                     >
                         <div
-                            class="size-[62px] rounded-[16px] shrink-0 ios-icon-surface p-2 overflow-hidden"
+                            bind:this={squircleEl}
+                            class="size-[62px] shrink-0 ios-squircle-shadow"
                         >
-                            {@render miniCluster(overflowItems)}
+                            <div
+                                class="w-full h-full ios-icon-surface p-2 overflow-hidden"
+                            >
+                                {@render miniCluster(overflowItems)}
+                            </div>
                         </div>
-                        <span
-                            class="text-[11px] font-medium text-white/85 group-hover:text-white transition-colors truncate max-w-[84px] shrink-0 leading-tight ios-label-shadow"
-                        >
-                            More
-                        </span>
+                        {#if dashboard.showIconLabels}
+                            <span
+                                class="text-[11px] font-medium ios-vibrant-label group-hover:text-white transition-colors truncate max-w-[84px] shrink-0 leading-tight"
+                            >
+                                More
+                            </span>
+                        {/if}
                     </button>
                 {/if}
             </div>
         </div>
 
-        <span
-            class="text-[11.5px] font-medium text-white/90 truncate w-full text-center shrink-0 leading-tight ios-label-shadow"
-        >
-            {node.title}
-        </span>
+        {#if dashboard.showIconLabels}
+            <span
+                class="text-[11.5px] font-medium ios-vibrant-label truncate w-full text-center shrink-0 leading-tight"
+            >
+                {node.title}
+            </span>
+        {/if}
     </div>
 {/if}

@@ -1,5 +1,13 @@
 export type NodeType = "action" | "container" | "clock" | "search" | "todo" | "calendar";
 
+export type WallpaperPreset = "cupertino" | "aurora" | "solar" | "titanium";
+
+export interface AppearancePreferences {
+  wallpaper: WallpaperPreset;
+  showIconLabels: boolean;
+  reducedParallax: boolean;
+}
+
 export interface TodoItem {
   id: string;
   text: string;
@@ -12,7 +20,14 @@ export interface CalendarEvent {
   id: string;
   title: string;
   time: string;
+  date?: string; // ISO YYYY-MM-DD
   color?: string;
+}
+
+export interface WorldClockCity {
+  name: string;
+  timezone: string;
+  flag?: string;
 }
 
 export interface NodeSettings {
@@ -20,6 +35,8 @@ export interface NodeSettings {
   timezone?: string;
   flag?: string;
   clockFace?: "analog" | "digital";
+  sweepSeconds?: boolean;
+  cities?: WorldClockCity[];
   // Search widget settings
   placeholder?: string;
   engineUrl?: string;
@@ -89,6 +106,14 @@ export interface DragEndEventPayload {
   };
 }
 
+export type AppLibraryCategoryId = "dev" | "productivity" | "media" | "social" | "utilities";
+
+export interface AppLibraryCategory {
+  id: AppLibraryCategoryId;
+  title: string;
+  nodes: DashboardNode[];
+}
+
 /**
  * Resolves the icon URL through the local Go RAM cache (`/api/v1/icons/{domain}`)
  * so icons load instantaneously with immutable caching and zero external tracking.
@@ -146,4 +171,42 @@ export function getNodeBrandGradient(node: DashboardNode): string {
     hash = (hash * 31 + raw.charCodeAt(i)) | 0;
   }
   return APPLE_SQUIRCLE_PALETTES[Math.abs(hash) % APPLE_SQUIRCLE_PALETTES.length];
+}
+
+export function categorizeActionNode(node: DashboardNode): AppLibraryCategoryId {
+  const haystack = `${node.title} ${node.url ?? ""}`.toLowerCase();
+
+  if (
+    /github|gitlab|vercel|cloudflare|docker|kubernetes|aws|gcp|azure|localhost|127\.0\.0\.1|portainer|proxmox|grafana|prometheus|linear|sentry|npm|crates|go\.dev|stackoverflow/.test(
+      haystack,
+    )
+  ) {
+    return "dev";
+  }
+
+  if (
+    /youtube|netflix|spotify|twitch|plex|jellyfin|music|video|podcast|soundcloud|primevideo|disney|letterboxd|imdb/.test(
+      haystack,
+    )
+  ) {
+    return "media";
+  }
+
+  if (
+    /reddit|discord|x\.com|twitter|mastodon|bluesky|threads|whatsapp|telegram|signal|slack|linkedin|instagram|news\.ycombinator|hackernews/.test(
+      haystack,
+    )
+  ) {
+    return "social";
+  }
+
+  if (
+    /gmail|mail|calendar|notion|figma|docs|drive|dropbox|icloud|obsidian|todo|linear|jira|confluence|openai|chatgpt|claude|anthropic|perplexity/.test(
+      haystack,
+    )
+  ) {
+    return "productivity";
+  }
+
+  return "utilities";
 }

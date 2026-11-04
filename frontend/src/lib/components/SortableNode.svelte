@@ -28,17 +28,25 @@
     let prevRect: DOMRect | null = null;
     let prevGridKey = "";
 
-    let longPressTimer: ReturnType<typeof setTimeout> | null = null;
+    let isTactilePressed = $state(false);
+    let isHoldingGesture = $state(false);
+    let quickActionTimer: ReturnType<typeof setTimeout> | null = null;
+    let jigglePromoteTimer: ReturnType<typeof setTimeout> | null = null;
     let pointerStartPos = { x: 0, y: 0 };
+    let pointerDownInitialBounds = { left: 0, top: 0, width: 0, height: 0 };
 
     let isResizing = $derived(dashboard.resizingNodeId === node.id);
     let isFlipped = $derived(dashboard.flippedNodeId === node.id);
     let isContextTarget = $derived(
         dashboard.contextMenu.open && dashboard.contextMenu.nodeId === node.id,
     );
+    let isDirectDragTarget = $derived(
+        dashboard.isDirectDragging && dashboard.activeDragNodeId === node.id,
+    );
 
     let isDisabled = $derived(
         !dashboard.isEditMode ||
+            dashboard.isDirectDragging ||
             isResizing ||
             isFlipped ||
             (!inModal && dashboard.openFolderId !== null),
@@ -61,6 +69,12 @@
         !isRootGridNode
             ? ""
             : `--col-start: ${effectiveRect.x}; --row-start: ${effectiveRect.y}; --col-span: ${effectiveRect.w}; --row-span: ${effectiveRect.h}; --col-span-sm: ${Math.min(effectiveRect.w, 4)}; --col-span-md: ${Math.min(effectiveRect.w, 8)};`,
+    );
+
+    let directDragStyle = $derived(
+        isDirectDragTarget
+            ? `transform: translate3d(${dashboard.directDragDelta.x}px, ${dashboard.directDragDelta.y}px, 0) scale(1.05);`
+            : "",
     );
 
     let jiggleTiming = $derived.by(() => {
@@ -99,54 +113,144 @@
         },
     });
 
+    // Global capture listener while holding so releasing over ContextMenu backdrop always clears timers
+    $effect(() => {
+        if (!isHoldingGesture) return;
+        const onWindowUp = () => clearGestureTimers();
+        window.addEventListener("pointerup", onWindowUp, { capture: true });
+        window.addEventListener("pointercancel", onWindowUp, { capture: true });
+        return () => {
+            window.removeEventListener("pointerup", onWindowUp, {
+                capture: true,
+            });
+            window.removeEventListener("pointercancel", onWindowUp, {
+                capture: true,
+            });
+        };
+    });
+
+    // Continuously record the live visual screen rect while @dnd-kit is dragging this node
+    $effect(() => {
+        if (!draggable.isDragging || !outerEl) return;
+        const recordNow = () => {
+            if (outerEl && draggable.isDragging) {
+                dashboard.recordActiveDragRect(
+                    node.id,
+                    outerEl.getBoundingClientRect(),
+                );
+            }
+        };
+        recordNow();
+        window.addEventListener("pointermove", recordNow, { capture: true });
+        return () => {
+            window.removeEventListener("pointermove", recordNow, {
+                capture: true,
+            });
+        };
+    });
+
     $effect.pre(() => {
         const _key = `${effectiveRect.x}:${effectiveRect.y}:${effectiveRect.w}:${effectiveRect.h}`;
-        if (outerEl && isRootGridNode && !draggable.isDragging) {
+        const _settleSeq = dashboard.settlingDrop?.seq;
+        if (
+            outerEl &&
+            isRootGridNode &&
+            !draggable.isDragging &&
+            !isDirectDragTarget
+        ) {
             prevRect = outerEl.getBoundingClientRect();
         }
     });
 
+    // Full-Cycle Spring Drop Settlement & Sibling Reflow FLIP
     $effect(() => {
         const currentKey = `${effectiveRect.x}:${effectiveRect.y}:${effectiveRect.w}:${effectiveRect.h}`;
-        if (
-            outerEl &&
-            prevRect &&
-            prevGridKey &&
-            prevGridKey !== currentKey &&
-            isRootGridNode &&
-            !draggable.isDragging
-        ) {
-            const nextRect = outerEl.getBoundingClientRect();
-            const dx = prevRect.left - nextRect.left;
-            const dy = prevRect.top - nextRect.top;
+        const _settleSeq = dashboard.settlingDrop?.seq;
 
-            if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
-                outerEl.animate(
-                    [
-                        { transform: `translate3d(${dx}px, ${dy}px, 0)` },
-                        { transform: "translate3d(0, 0, 0)" },
-                    ],
-                    {
-                        duration: 310,
-                        easing: "cubic-bezier(0.22, 1, 0.36, 1)",
-                    },
-                );
+        if (outerEl && !draggable.isDragging && !isDirectDragTarget) {
+            const releaseBounds = dashboard.consumeReleaseRect(node.id);
+            if (releaseBounds) {
+                const nextRect = outerEl.getBoundingClientRect();
+                const dx = releaseBounds.left - nextRect.left;
+                const dy = releaseBounds.top - nextRect.top;
+
+                if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+                    outerEl.animate(
+                        [
+                            {
+                                transform: `translate3d(${dx}px, ${dy}px, 0) scale(1.06)`,
+                            },
+                            { transform: "translate3d(0, 0, 0) scale(1)" },
+                        ],
+                        {
+                            duration: 360,
+                            easing: "cubic-bezier(0.22, 1, 0.36, 1)",
+                        },
+                    );
+                }
+            } else if (
+                prevRect &&
+                prevGridKey &&
+                prevGridKey !== currentKey &&
+                isRootGridNode
+            ) {
+                const nextRect = outerEl.getBoundingClientRect();
+                const dx = prevRect.left - nextRect.left;
+                const dy = prevRect.top - nextRect.top;
+
+                if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
+                    outerEl.animate(
+                        [
+                            { transform: `translate3d(${dx}px, ${dy}px, 0)` },
+                            { transform: "translate3d(0, 0, 0)" },
+                        ],
+                        {
+                            duration: 320,
+                            easing: "cubic-bezier(0.22, 1, 0.36, 1)",
+                        },
+                    );
+                }
             }
         }
         prevGridKey = currentKey;
     });
 
-    function clearLongPress() {
-        if (longPressTimer) {
-            clearTimeout(longPressTimer);
-            longPressTimer = null;
+    function clearGestureTimers() {
+        isTactilePressed = false;
+        isHoldingGesture = false;
+        if (quickActionTimer) {
+            clearTimeout(quickActionTimer);
+            quickActionTimer = null;
+        }
+        if (jigglePromoteTimer) {
+            clearTimeout(jigglePromoteTimer);
+            jigglePromoteTimer = null;
+        }
+    }
+
+    function promoteHoldGesture() {
+        clearGestureTimers();
+        if (isRootGridNode) {
+            dashboard.promoteHoldToDirectDrag(
+                node.id,
+                pointerStartPos.x,
+                pointerStartPos.y,
+                pointerDownInitialBounds,
+            );
+        } else {
+            dashboard.closeContextMenu();
+            dashboard.enterEditMode();
         }
     }
 
     function handlePointerDown(e: PointerEvent) {
         if (e.button !== 0 || isFlipped) return;
 
-        // Record which sub-cell of a multi-cell widget was grabbed so drag reflow doesn't jump
+        // Prevent child actions inside a container from triggering the parent container's hold timer
+        if (inContainer || inDock || inModal) {
+            e.stopPropagation();
+        }
+
         if (outerEl && isRootGridNode) {
             const rect = outerEl.getBoundingClientRect();
             const wCols = Math.max(1, node.width || 1);
@@ -174,21 +278,51 @@
         }
 
         pointerStartPos = { x: e.clientX, y: e.clientY };
-        clearLongPress();
-        longPressTimer = setTimeout(() => {
-            longPressTimer = null;
-            dashboard.enterEditMode();
-        }, 420);
+        if (outerEl) {
+            const r = outerEl.getBoundingClientRect();
+            pointerDownInitialBounds = {
+                left: r.left,
+                top: r.top,
+                width: r.width,
+                height: r.height,
+            };
+        }
+
+        clearGestureTimers();
+        isTactilePressed = true;
+        isHoldingGesture = true;
+
+        // Stage 2 (280ms): Foreground Platter Lift & Quick Actions
+        quickActionTimer = setTimeout(() => {
+            quickActionTimer = null;
+            isTactilePressed = false;
+            if (!dashboard.isEditMode && outerEl) {
+                dashboard.openContextMenu(node, e, outerEl, inDock);
+            }
+        }, 280);
+
+        // Stage 3 (680ms): Seamless Promotion into Jiggle Mode
+        jigglePromoteTimer = setTimeout(() => {
+            promoteHoldGesture();
+        }, 680);
     }
 
     function handlePointerMove(e: PointerEvent) {
-        if (!longPressTimer) return;
+        if (!isHoldingGesture) return;
         const dist = Math.hypot(
             e.clientX - pointerStartPos.x,
             e.clientY - pointerStartPos.y,
         );
-        if (dist > 8) {
-            clearLongPress();
+
+        // Moved > 8px before Stage 2 (280ms): user is swiping the page, cancel hold
+        if (quickActionTimer && dist > 8) {
+            clearGestureTimers();
+            return;
+        }
+
+        // Moved > 10px during Stage 2 (while Platter Lift is open): promote immediately!
+        if (!quickActionTimer && dist > 10) {
+            promoteHoldGesture();
         }
     }
 
@@ -239,11 +373,14 @@
 <div
     bind:this={outerEl}
     {@attach droppable.attach}
-    oncontextmenu={(e) => dashboard.openContextMenu(node, e)}
+    oncontextmenu={(e) => {
+        e.stopPropagation();
+        dashboard.openContextMenu(node, e, outerEl, inDock);
+    }}
     onpointerdown={handlePointerDown}
     onpointermove={handlePointerMove}
-    onpointerup={clearLongPress}
-    onpointercancel={clearLongPress}
+    onpointerup={clearGestureTimers}
+    onpointercancel={clearGestureTimers}
     style={gridStyle}
     class="relative ios-flip-scene {inDock
         ? 'size-14 shrink-0'
@@ -251,31 +388,32 @@
         ? 'col-[span_var(--col-span-sm)/span_var(--col-span-sm)] md:col-[span_var(--col-span-md)/span_var(--col-span-md)] row-[span_var(--row-span)/span_var(--row-span)] lg:col-[var(--col-start)/span_var(--col-span)] lg:row-[var(--row-start)/span_var(--row-span)]'
         : ''} {isResizing ||
     isFlipped ||
-    isContextTarget ||
-    draggable.isDragging
+    draggable.isDragging ||
+    isDirectDragTarget
         ? 'z-40'
-        : 'z-10'} {isContextTarget
-        ? 'scale-[1.04] transition-transform duration-200'
-        : ''}"
+        : 'z-10'} {isContextTarget ? 'opacity-0 pointer-events-none' : ''}"
 >
     <div
         {@attach draggable.attach}
+        style={directDragStyle}
         class="relative w-full h-full {dashboard.isEditMode && !isFlipped
             ? 'cursor-grab active:cursor-grabbing'
-            : ''} {draggable.isDragging
-            ? 'pointer-events-none opacity-85 scale-[1.05] z-50 drop-shadow-[0_24px_48px_rgba(0,0,0,0.65)]'
-            : ''}"
+            : ''} {draggable.isDragging || isDirectDragTarget
+            ? 'pointer-events-none opacity-92 scale-[1.05] z-50 drop-shadow-[0_26px_48px_rgba(0,0,0,0.68)]'
+            : ''} {isTactilePressed ? 'ios-tactile-press' : ''}"
     >
         <!-- Inner Jiggle Layer -->
         <div
             style={dashboard.isEditMode &&
             !draggable.isDragging &&
+            !isDirectDragTarget &&
             !isResizing &&
             !isFlipped
                 ? jiggleTiming
                 : ""}
             class="relative w-full h-full {dashboard.isEditMode &&
             !draggable.isDragging &&
+            !isDirectDragTarget &&
             !isResizing &&
             !isFlipped
                 ? effectiveRect.w === 1 && effectiveRect.h === 1

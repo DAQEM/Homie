@@ -12,8 +12,10 @@
     import NodeRenderer from "./lib/components/NodeRenderer.svelte";
     import PageDots from "./lib/components/PageDots.svelte";
     import Dock from "./lib/components/Dock.svelte";
+    import ControlCenterPopover from "./lib/components/ControlCenterPopover.svelte";
     import ContextMenu from "./lib/components/ContextMenu.svelte";
     import FolderModal from "./lib/components/FolderModal.svelte";
+    import AppLibraryModal from "./lib/components/AppLibraryModal.svelte";
     import NodeFormModal from "./lib/components/NodeFormModal.svelte";
     import WorkspaceModal from "./lib/components/WorkspaceModal.svelte";
     import SpotlightModal from "./lib/components/SpotlightModal.svelte";
@@ -23,15 +25,27 @@
     // Capture-phase pointer listener so @dnd-kit's stopPropagation() cannot swallow drag coordinates
     $effect(() => {
         const onCaptureMove = (e: PointerEvent) => handlePointerMove(e);
-        const onCaptureUp = () => {
+        const onCaptureUp = (e: PointerEvent) => {
             clearEdgeDragTimer();
             clearFolderDwellTimer();
             clearWallpaperLongPress();
+            evictedTargetId = null;
+            if (dashboard.isDirectDragging) {
+                void dashboard.finishDirectDrag(e.clientX, e.clientY);
+            }
+            if (isPointerSwipingPage) {
+                isPointerSwipingPage = false;
+                dashboard.endPageSwipe();
+            }
+            isWallpaperPointerDown = false;
         };
         window.addEventListener("pointermove", onCaptureMove, {
             capture: true,
         });
         window.addEventListener("pointerup", onCaptureUp, { capture: true });
+        window.addEventListener("pointercancel", onCaptureUp, {
+            capture: true,
+        });
         return () => {
             window.removeEventListener("pointermove", onCaptureMove, {
                 capture: true,
@@ -39,16 +53,24 @@
             window.removeEventListener("pointerup", onCaptureUp, {
                 capture: true,
             });
+            window.removeEventListener("pointercancel", onCaptureUp, {
+                capture: true,
+            });
         };
     });
 
-    let gridSectionEl: HTMLElement | undefined = $state();
-    let lastWheelSwitchAt = 0;
+    let gridSectionEls = $state<Record<string, HTMLElement | null>>({});
     let edgeDragTimer: ReturnType<typeof setTimeout> | null = null;
     let folderDwellTimer: ReturnType<typeof setTimeout> | null = null;
+    let folderEvictTimer: ReturnType<typeof setTimeout> | null = null;
     let folderDwellCandidateId: string | null = null;
+    let evictedTargetId: string | null = null;
     let wallpaperLongPressTimer: ReturnType<typeof setTimeout> | null = null;
     let wallpaperDownPos = { x: 0, y: 0 };
+    let isWallpaperPointerDown = false;
+    let isPointerSwipingPage = false;
+    let lastPointerSwipeX = 0;
+    let lastPointerSwipeTime = 0;
 
     let cells = $derived.by(() => {
         const list: { x: number; y: number; occupied: boolean }[] = [];
@@ -64,9 +86,13 @@
         return list;
     });
 
-    let isRecessed = $derived(
-        dashboard.openFolderId !== null || dashboard.isSpotlightOpen,
+    let isFullModalRecessed = $derived(
+        dashboard.openFolderId !== null ||
+            dashboard.isSpotlightOpen ||
+            dashboard.isAppLibraryOpen,
     );
+
+    let isQuickActionRecessed = $derived(dashboard.contextMenu.open);
 
     function clearEdgeDragTimer() {
         if (edgeDragTimer) {
@@ -79,6 +105,10 @@
         if (folderDwellTimer) {
             clearTimeout(folderDwellTimer);
             folderDwellTimer = null;
+        }
+        if (folderEvictTimer) {
+            clearTimeout(folderEvictTimer);
+            folderEvictTimer = null;
         }
         folderDwellCandidateId = null;
     }
@@ -102,12 +132,19 @@
     function handleBackgroundPointerDown(e: PointerEvent) {
         if (e.button !== 0 || !isBackgroundTarget(e.target)) return;
         wallpaperDownPos = { x: e.clientX, y: e.clientY };
+        isWallpaperPointerDown = true;
+        isPointerSwipingPage = false;
+        lastPointerSwipeX = e.clientX;
+        lastPointerSwipeTime = performance.now();
         clearWallpaperLongPress();
 
         if (!dashboard.isEditMode) {
             wallpaperLongPressTimer = setTimeout(() => {
                 wallpaperLongPressTimer = null;
-                dashboard.enterEditMode();
+                if (!isPointerSwipingPage) {
+                    isWallpaperPointerDown = false;
+                    dashboard.enterEditMode();
+                }
             }, 420);
         }
     }
@@ -148,8 +185,20 @@
             (e.target as HTMLElement | null)?.isContentEditable;
 
         if (e.key === "Escape") {
+            if (dashboard.isControlCenterOpen) {
+                dashboard.closeControlCenter();
+                return;
+            }
             if (dashboard.isSpotlightOpen) {
                 dashboard.closeSpotlight();
+                return;
+            }
+            if (dashboard.isAppLibraryOpen) {
+                dashboard.closeAppLibrary();
+                return;
+            }
+            if (dashboard.openFolderId) {
+                dashboard.closeFolder();
                 return;
             }
             if (dashboard.contextMenu.open) {
@@ -162,7 +211,6 @@
             }
             if (
                 dashboard.isEditMode &&
-                !dashboard.openFolderId &&
                 !dashboard.nodeModal.open &&
                 !dashboard.isWorkspaceModalOpen
             ) {
@@ -176,6 +224,8 @@
         if (
             e.key === "/" &&
             !dashboard.openFolderId &&
+            !dashboard.isAppLibraryOpen &&
+            !dashboard.isControlCenterOpen &&
             !dashboard.nodeModal.open &&
             !dashboard.isWorkspaceModalOpen
         ) {
@@ -192,6 +242,9 @@
 
         if (
             dashboard.isSpotlightOpen ||
+            dashboard.isAppLibraryOpen ||
+            dashboard.isControlCenterOpen ||
+            dashboard.contextMenu.open ||
             dashboard.openFolderId ||
             dashboard.nodeModal.open ||
             dashboard.isWorkspaceModalOpen
@@ -211,25 +264,24 @@
     function handleHorizontalWheel(e: WheelEvent) {
         if (
             dashboard.isSpotlightOpen ||
+            dashboard.isAppLibraryOpen ||
+            dashboard.isControlCenterOpen ||
+            dashboard.contextMenu.open ||
             dashboard.openFolderId ||
             dashboard.nodeModal.open ||
-            dashboard.isWorkspaceModalOpen
+            dashboard.isWorkspaceModalOpen ||
+            dashboard.activeDragNodeId ||
+            dashboard.resizingNodeId
         ) {
             return;
         }
 
         if (
-            Math.abs(e.deltaX) > 42 &&
-            Math.abs(e.deltaX) > Math.abs(e.deltaY) * 1.5
+            Math.abs(e.deltaX) > 4 &&
+            Math.abs(e.deltaX) > Math.abs(e.deltaY) * 1.2
         ) {
-            const now = performance.now();
-            if (now - lastWheelSwitchAt < 520) return;
-
-            if (e.deltaX > 0 && dashboard.selectNextWorkspace()) {
-                lastWheelSwitchAt = now;
-            } else if (e.deltaX < 0 && dashboard.selectPrevWorkspace()) {
-                lastWheelSwitchAt = now;
-            }
+            e.preventDefault();
+            dashboard.handleWheelPaging(e.deltaX, window.innerWidth || 1280);
         }
     }
 
@@ -242,14 +294,60 @@
             if (dist > 8) clearWallpaperLongPress();
         }
 
+        if (dashboard.isDirectDragging) {
+            dashboard.updateDirectDrag(e.clientX, e.clientY);
+        }
+
+        // 1:1 Pointer / Touch Horizontal Swipe on the Wallpaper Surface
+        if (
+            isWallpaperPointerDown &&
+            !dashboard.activeDragNodeId &&
+            !dashboard.resizingNodeId &&
+            dashboard.workspaces.length > 0
+        ) {
+            const totalDx = e.clientX - wallpaperDownPos.x;
+            const totalDy = e.clientY - wallpaperDownPos.y;
+
+            if (
+                !isPointerSwipingPage &&
+                Math.abs(totalDx) > 10 &&
+                Math.abs(totalDx) > Math.abs(totalDy) * 1.2
+            ) {
+                clearWallpaperLongPress();
+                isPointerSwipingPage = true;
+                dashboard.beginPageSwipe();
+                lastPointerSwipeX = e.clientX;
+                lastPointerSwipeTime = performance.now();
+            }
+
+            if (isPointerSwipingPage) {
+                const now = performance.now();
+                const dt = Math.max(8, now - lastPointerSwipeTime);
+                const stepDx = e.clientX - lastPointerSwipeX;
+                lastPointerSwipeX = e.clientX;
+                lastPointerSwipeTime = now;
+
+                const deltaPages =
+                    -stepDx / Math.max(window.innerWidth || 1280, 320);
+                dashboard.updatePageSwipe(deltaPages, dt);
+                return;
+            }
+        }
+
         if (!dashboard.isEditMode || !dashboard.activeDragNodeId) {
             clearEdgeDragTimer();
             clearFolderDwellTimer();
+            evictedTargetId = null;
             return;
         }
 
-        if (gridSectionEl && !dashboard.openFolderId) {
-            const rect = gridSectionEl.getBoundingClientRect();
+        const activeWsId = dashboard.activeWorkspace?.id;
+        const activeGridEl = activeWsId
+            ? gridSectionEls[activeWsId]
+            : undefined;
+
+        if (activeGridEl && !dashboard.openFolderId) {
+            const rect = activeGridEl.getBoundingClientRect();
             const isInsideGrid =
                 e.clientX >= rect.left &&
                 e.clientX <= rect.right &&
@@ -261,52 +359,112 @@
                 const rowHeight = 116;
                 const relX = e.clientX - rect.left;
                 const relY = e.clientY - rect.top;
+
+                const exactCol = relX / colWidth + 1;
+                const exactRow = relY / rowHeight + 1;
                 const rawCol = Math.floor(relX / colWidth) + 1;
                 const rawRow = Math.floor(relY / rowHeight) + 1;
 
                 const draggedNode = dashboard.nodes.find(
                     (n) => n.id === dashboard.activeDragNodeId,
                 );
-                const cellOffsetX = (relX % colWidth) / colWidth;
-                const cellOffsetY = (relY % rowHeight) / rowHeight;
-                const isNearCellCenter =
-                    cellOffsetX > 0.22 &&
-                    cellOffsetX < 0.78 &&
-                    cellOffsetY > 0.2 &&
-                    cellOffsetY < 0.8;
 
-                const targetAtCell =
-                    draggedNode?.node_type === "action" && isNearCellCenter
-                        ? dashboard.rootNodes.find(
-                              (n) =>
-                                  n.id !== draggedNode.id &&
-                                  (n.node_type === "action" ||
-                                      n.node_type === "container") &&
-                                  rawCol >= n.grid_x &&
-                                  rawCol < n.grid_x + (n.width || 1) &&
-                                  rawRow >= n.grid_y &&
-                                  rawRow < n.grid_y + (n.height || 1),
-                          )
-                        : undefined;
+                // Find if cursor is over a valid Merge / Drop-Into candidate
+                const candidateNode = dashboard.rootNodes.find((n) => {
+                    if (n.id === draggedNode?.id) return false;
+                    const inBounds =
+                        rawCol >= n.grid_x &&
+                        rawCol < n.grid_x + (n.width || 1) &&
+                        rawRow >= n.grid_y &&
+                        rawRow < n.grid_y + (n.height || 1);
+                    if (!inBounds) return false;
 
-                if (targetAtCell) {
-                    if (folderDwellCandidateId !== targetAtCell.id) {
+                    if (draggedNode?.node_type === "action") {
+                        return (
+                            n.node_type === "action" ||
+                            n.node_type === "container"
+                        );
+                    }
+
+                    const isDraggedWidget =
+                        draggedNode &&
+                        draggedNode.node_type !== "action" &&
+                        draggedNode.node_type !== "container";
+                    const isTargetWidget =
+                        n.node_type !== "action" && n.node_type !== "container";
+
+                    return Boolean(
+                        isDraggedWidget &&
+                        isTargetWidget &&
+                        (draggedNode.width || 2) === (n.width || 2) &&
+                        (draggedNode.height || 2) === (n.height || 2),
+                    );
+                });
+
+                if (candidateNode && evictedTargetId !== candidateNode.id) {
+                    evictedTargetId = null;
+                }
+
+                if (candidateNode && evictedTargetId !== candidateNode.id) {
+                    const w = candidateNode.width || 1;
+                    const h = candidateNode.height || 1;
+                    const u = (exactCol - candidateNode.grid_x) / w;
+                    const v = (exactRow - candidateNode.grid_y) / h;
+
+                    // Inner Core Drop Zone: 70% center of multi-cell containers, 60% center of 1x1 icons
+                    const edgeMargin = w >= 2 || h >= 2 ? 0.15 : 0.2;
+                    const isInsideDropCore =
+                        u > edgeMargin &&
+                        u < 1 - edgeMargin &&
+                        v > edgeMargin &&
+                        v < 1 - edgeMargin;
+
+                    if (isInsideDropCore) {
+                        // Hold reflow so the container stays in place to accept the drop!
+                        dashboard.holdGridReflowOnTarget();
+
+                        if (folderDwellCandidateId !== candidateNode.id) {
+                            clearFolderDwellTimer();
+                            folderDwellCandidateId = candidateNode.id;
+
+                            const activateDelay =
+                                candidateNode.node_type === "container"
+                                    ? 90
+                                    : 220;
+
+                            folderDwellTimer = setTimeout(() => {
+                                folderDwellTimer = null;
+                                dashboard.setFolderMergeTarget(
+                                    candidateNode.id,
+                                );
+                            }, activateDelay);
+
+                            // If user keeps holding over the center for >1050ms without dropping,
+                            // evict the container/icon so it dodges out of the way to make room!
+                            folderEvictTimer = setTimeout(() => {
+                                folderEvictTimer = null;
+                                evictedTargetId = candidateNode.id;
+                                folderDwellCandidateId = null;
+                                dashboard.setFolderMergeTarget(null);
+                                dashboard.updateDragReflow(rawCol, rawRow);
+                            }, 1050);
+                        }
+                    } else {
+                        // Outer Border / Edge Zone: immediately move the container/icon out of the way
                         clearFolderDwellTimer();
-                        dashboard.setFolderMergeTarget(null);
-                        folderDwellCandidateId = targetAtCell.id;
-                        folderDwellTimer = setTimeout(() => {
-                            folderDwellTimer = null;
-                            dashboard.setFolderMergeTarget(targetAtCell.id);
-                        }, 460);
+                        if (dashboard.folderMergeTargetId) {
+                            dashboard.setFolderMergeTarget(null);
+                        }
+                        dashboard.updateDragReflow(rawCol, rawRow);
                     }
                 } else {
+                    if (!candidateNode) {
+                        evictedTargetId = null;
+                    }
                     clearFolderDwellTimer();
                     if (dashboard.folderMergeTargetId) {
                         dashboard.setFolderMergeTarget(null);
                     }
-                }
-
-                if (!dashboard.folderMergeTargetId) {
                     dashboard.updateDragReflow(rawCol, rawRow);
                 }
             }
@@ -344,7 +502,7 @@
 
 <svelte:window
     onkeydown={handleGlobalKeydown}
-    onwheel={handleHorizontalWheel}
+    onwheel={{ handleEvent: handleHorizontalWheel, passive: false }}
 />
 
 <AmbientWallpaper />
@@ -356,11 +514,13 @@
     onpointerdown={handleBackgroundPointerDown}
     onclick={handleBackgroundClick}
     ondblclick={handleBackgroundDblClick}
-    class="relative min-h-screen px-4 pt-2 pb-36 space-y-4 transition-all duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] {isRecessed
-        ? 'scale-[0.955] blur-[6px] opacity-60 pointer-events-none'
-        : ''}"
+    class="relative min-h-screen pt-2 pb-36 space-y-4 overflow-x-hidden transform-gpu will-change-[transform,opacity] transition-[transform,opacity] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] {isFullModalRecessed
+        ? 'scale-[0.958] opacity-55 pointer-events-none'
+        : isQuickActionRecessed
+          ? 'scale-[0.974] opacity-68 pointer-events-none'
+          : ''}"
 >
-    <section class="max-w-[1520px] mx-auto">
+    <section class="max-w-[1520px] mx-auto px-4">
         <Header />
     </section>
 
@@ -369,46 +529,82 @@
         onDragOver={dashboard.handleDragOver}
         onDragEnd={dashboard.handleDragEnd}
     >
-        {#key dashboard.activeWorkspace?.id}
-            <section
-                bind:this={gridSectionEl}
+        <!-- Continuous Horizontal Spatial Viewport -->
+        <div
+            data-wallpaper-surface="true"
+            class="relative w-full overflow-x-clip"
+        >
+            <div
                 data-wallpaper-surface="true"
-                class="relative grid grid-cols-4 md:grid-cols-8 lg:grid-cols-16 auto-rows-[100px] gap-4 max-w-[1520px] mx-auto {dashboard.pageSlideDirection ===
-                'right'
-                    ? 'ios-page-slide-right'
-                    : dashboard.pageSlideDirection === 'left'
-                      ? 'ios-page-slide-left'
-                      : ''}"
+                style="transform: translate3d(calc({-dashboard.pagePosition} * 100%), 0, 0);"
+                class="flex w-full will-change-transform"
             >
-                {#each cells as cell (`${cell.x}:${cell.y}`)}
-                    <GridCell x={cell.x} y={cell.y} occupied={cell.occupied} />
-                {/each}
+                {#each dashboard.workspaces as ws, pageIdx (ws.id)}
+                    {@const isActivePage =
+                        ws.id === dashboard.activeWorkspace?.id}
+                    {@const isNearViewport =
+                        Math.abs(dashboard.pagePosition - pageIdx) <= 1.05}
+                    {@const pageNodes = dashboard.getWorkspaceRootNodes(ws.id)}
 
-                {#if dashboard.isEditMode && dashboard.dropPreview}
                     <div
-                        style="grid-column: {dashboard.dropPreview
-                            .x} / span {dashboard.dropPreview
-                            .w}; grid-row: {dashboard.dropPreview
-                            .y} / span {dashboard.dropPreview.h};"
-                        class="hidden lg:block pointer-events-none z-0 ios-drop-ghost"
-                    ></div>
-                {/if}
+                        data-wallpaper-surface="true"
+                        class="w-full shrink-0 px-4 {isNearViewport
+                            ? ''
+                            : 'invisible pointer-events-none'}"
+                    >
+                        <section
+                            bind:this={gridSectionEls[ws.id]}
+                            data-wallpaper-surface="true"
+                            class="relative grid grid-cols-4 md:grid-cols-8 lg:grid-cols-16 auto-rows-[100px] gap-4 max-w-[1520px] mx-auto"
+                        >
+                            {#if isActivePage}
+                                {#each cells as cell (`${cell.x}:${cell.y}`)}
+                                    <GridCell
+                                        x={cell.x}
+                                        y={cell.y}
+                                        occupied={cell.occupied}
+                                    />
+                                {/each}
 
-                {#each dashboard.rootNodes as node (node.id)}
-                    <SortableNode {node}>
-                        <NodeRenderer {node} />
-                    </SortableNode>
+                                {#if dashboard.isEditMode && dashboard.dropPreview}
+                                    <div
+                                        style="grid-column: {dashboard
+                                            .dropPreview.x} / span {dashboard
+                                            .dropPreview
+                                            .w}; grid-row: {dashboard
+                                            .dropPreview.y} / span {dashboard
+                                            .dropPreview.h};"
+                                        class="hidden lg:block pointer-events-none z-0 ios-drop-ghost"
+                                    ></div>
+                                {/if}
+                            {:else}
+                                <div
+                                    aria-hidden="true"
+                                    style="grid-column: 1 / -1; grid-row: 1 / span {GRID_ROWS};"
+                                    class="hidden lg:block pointer-events-none"
+                                ></div>
+                            {/if}
+
+                            {#each pageNodes as node (node.id)}
+                                <SortableNode {node}>
+                                    <NodeRenderer {node} />
+                                </SortableNode>
+                            {/each}
+                        </section>
+                    </div>
                 {/each}
-            </section>
-        {/key}
+            </div>
+        </div>
 
         <PageDots />
         <Dock />
     </DragDropProvider>
 </main>
 
+<ControlCenterPopover />
 <SpotlightModal />
 <ContextMenu />
 <FolderModal />
+<AppLibraryModal />
 <NodeFormModal />
 <WorkspaceModal />

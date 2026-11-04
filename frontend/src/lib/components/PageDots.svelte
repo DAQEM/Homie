@@ -17,20 +17,25 @@
             aria-label="Home Screen Pages"
             class="pointer-events-auto ios-glass-pill rounded-full px-2.5 py-1.5 flex items-center gap-1.5 transition-all duration-200"
         >
-            {#each dashboard.workspaces as ws (ws.id)}
+            {#each dashboard.workspaces as ws, idx (ws.id)}
                 {@const isActive = dashboard.activeWorkspace?.id === ws.id}
+                {@const proximity = Math.max(
+                    0,
+                    1 - Math.abs(dashboard.pagePosition - idx),
+                )}
                 <div class="relative flex items-center">
                     <button
                         type="button"
                         onclick={() => dashboard.selectWorkspace(ws.id)}
                         title={ws.name}
-                        class="group flex items-center justify-center rounded-full transition-all duration-200 cursor-pointer {showLabels
+                        style={!showLabels
+                            ? `width: ${(8 + proximity * 10).toFixed(1)}px; opacity: ${(0.35 + proximity * 0.65).toFixed(2)};`
+                            : ""}
+                        class="group flex items-center justify-center rounded-full transition-colors duration-150 cursor-pointer {showLabels
                             ? isActive
                                 ? 'bg-white text-black px-2.5 py-0.5 text-[11px] font-semibold shadow-sm'
                                 : 'text-white/65 hover:text-white hover:bg-white/10 px-2.5 py-0.5 text-[11px] font-medium'
-                            : isActive
-                              ? 'w-2 h-2 bg-white shadow-[0_0_6px_rgba(255,255,255,0.6)]'
-                              : 'w-2 h-2 bg-white/35 hover:bg-white/65'}"
+                            : 'h-2 bg-white shadow-[0_0_6px_rgba(255,255,255,0.35)]'}"
                     >
                         {#if showLabels}
                             <span class="truncate max-w-[96px]">{ws.name}</span>

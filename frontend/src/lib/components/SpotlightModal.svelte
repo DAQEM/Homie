@@ -6,7 +6,6 @@
         Folder,
         Globe,
         Layers,
-        ListTodo,
         Search,
         Sparkles,
     } from "@lucide/svelte";
@@ -110,6 +109,7 @@
                     subtitle: n.url ? `${loc} — ${n.url}` : loc,
                     node: n,
                     execute: () => {
+                        dashboard.recordAppLaunch(n.id);
                         dashboard.closeSpotlight();
                         if (n.url) {
                             window.open(n.url, "_blank", "noopener,noreferrer");

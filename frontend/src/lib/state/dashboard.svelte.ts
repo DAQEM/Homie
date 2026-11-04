@@ -1,20 +1,27 @@
 import { arrayMove } from "@dnd-kit/helpers";
-import type {
-  BootstrapPayload,
-  CalendarEvent,
-  DashboardNode,
-  DragEndEventPayload,
-  NodeModalState,
-  NodeSettings,
-  NodeType,
-  SignalDelta,
-  TodoItem,
-  Workspace,
+import {
+  categorizeActionNode,
+  type AppearancePreferences,
+  type AppLibraryCategory,
+  type AppLibraryCategoryId,
+  type BootstrapPayload,
+  type CalendarEvent,
+  type DashboardNode,
+  type DragEndEventPayload,
+  type NodeModalState,
+  type NodeSettings,
+  type NodeType,
+  type SignalDelta,
+  type TodoItem,
+  type WallpaperPreset,
+  type Workspace,
 } from "../types";
 
 const STORAGE_KEY = "homie_snapshot_v7";
 const ETAG_KEY = "homie_etag_v7";
 const WORKSPACE_STORAGE_KEY = "homie_active_workspace_id";
+const APP_USAGE_STORAGE_KEY = "homie_app_usage_v1";
+const APPEARANCE_STORAGE_KEY = "homie_appearance_v1";
 
 export const GRID_COLS = 16;
 export const GRID_ROWS = 8;
@@ -38,6 +45,7 @@ export const WIDGET_SIZE_PRESETS: Record<NodeType, WidgetSizePreset[]> = {
   clock: [
     { label: "Small", shortLabel: "S", w: 2, h: 2 },
     { label: "Medium", shortLabel: "M", w: 4, h: 2 },
+    { label: "Large", shortLabel: "L", w: 4, h: 4 },
   ],
   search: [
     { label: "Compact", shortLabel: "S", w: 4, h: 1 },
@@ -72,35 +80,93 @@ export interface GridRect {
   h: number;
 }
 
+export interface ScreenBounds {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
 export interface ContextMenuState {
   open: boolean;
   nodeId: string | null;
   x: number;
   y: number;
+  anchorRect: ScreenBounds | null;
+  inDock: boolean;
+  transformOrigin: string;
 }
+
+const CATEGORY_LABELS: Record<AppLibraryCategoryId, string> = {
+  productivity: "Productivity & Work",
+  dev: "Development & Cloud",
+  media: "Media & Entertainment",
+  social: "Social & Reading",
+  utilities: "Utilities & Web",
+};
 
 class DashboardStore {
   now = $state<Date>(new Date());
+  isDocumentVisible = $state<boolean>(true);
 
   workspaces = $state<Workspace[]>([]);
   nodes = $state<DashboardNode[]>([]);
   signals = $state<Record<string, unknown>>({});
   activeWorkspaceId = $state<string | null>(null);
+
+  // Step 1: Continuous Spatial Paging & 120Hz Spring State
+  pagePosition = $state<number>(0);
+  isPageDragging = $state<boolean>(false);
   pageSlideDirection = $state<"left" | "right" | null>(null);
+  private rawSwipePagePos = 0;
+  private pageVelocity = 0;
+  private springRafId: number | null = null;
+  private springTargetIndex = 0;
+  private springLastTime = 0;
+  private wheelGestureTimer: ReturnType<typeof setTimeout> | null = null;
+  private wheelLastEventAt = 0;
+  private wheelLockedAfterSnapUntil = 0;
+
+  // Step 3: Bi-Directional FLIP Folder Morphing & Modals
   isEditMode = $state<boolean>(false);
   openFolderId = $state<string | null>(null);
-  openFolderOrigin = $state<{ cx: number; cy: number } | null>(null);
+  isFolderClosing = $state<boolean>(false);
+  openFolderOrigin = $state<{
+    cx: number;
+    cy: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  private folderAnchorEls = new Map<string, HTMLElement>();
+  private folderCloseTimer: ReturnType<typeof setTimeout> | null = null;
+
+  isAppLibraryOpen = $state<boolean>(false);
+  appLibraryOrigin = $state<{ cx: number; cy: number } | null>(null);
   flippedNodeId = $state<string | null>(null);
   isWorkspaceModalOpen = $state<boolean>(false);
   isSpotlightOpen = $state<boolean>(false);
   spotlightInitialQuery = $state<string>("");
   hydrationStatus = $state<string>("Cold Boot");
 
+  // Step 4: Control Center & Appearance Studio
+  isControlCenterOpen = $state<boolean>(false);
+  wallpaperPreset = $state<WallpaperPreset>("cupertino");
+  showIconLabels = $state<boolean>(true);
+  reducedParallax = $state<boolean>(false);
+
+  // Step 5: Smart Stacks & App Usage Tracking
+  appUsageMap = $state<Record<string, number>>({});
+  activeStackIndices = $state<Record<string, number>>({});
+
+  // Step 2: Platter Lift Quick Actions, Hold-to-Drag & Drop Settlement
   contextMenu = $state<ContextMenuState>({
     open: false,
     nodeId: null,
     x: 0,
     y: 0,
+    anchorRect: null,
+    inDock: false,
+    transformOrigin: "top left",
   });
 
   activeDragNodeId = $state<string | null>(null);
@@ -109,6 +175,14 @@ class DashboardStore {
   folderMergeTargetId = $state<string | null>(null);
   dropPreview = $state<GridRect | null>(null);
   previewPositions = $state<Record<string, GridRect>>({});
+
+  isDirectDragging = $state<boolean>(false);
+  directDragDelta = $state<{ x: number; y: number }>({ x: 0, y: 0 });
+  private directDragStartPointer = { x: 0, y: 0 };
+  private directDragInitialBounds: ScreenBounds | null = null;
+  private activeDragLiveBounds: { id: string; rect: ScreenBounds } | null = null;
+  settlingDrop = $state<{ id: string; rect: ScreenBounds; seq: number } | null>(null);
+  private settlingSeq = 0;
 
   nodeModal = $state<NodeModalState>({
     open: false,
@@ -137,27 +211,11 @@ class DashboardStore {
     ),
   );
 
-  rootNodes = $derived<DashboardNode[]>(
-    this.nodes
-      .filter(
-        (n) =>
-          n.workspace_id === this.activeWorkspace?.id &&
-          !n.parent_id &&
-          n.grid_x > 0 &&
-          n.grid_y > 0,
-      )
-      .sort((a, b) => a.grid_y - b.grid_y || a.grid_x - b.grid_x || a.sort_order - b.sort_order),
-  );
+  rootNodes = $derived<DashboardNode[]>(this.getWorkspaceRootNodes(this.activeWorkspace?.id ?? ""));
 
   dockNodes = $derived<DashboardNode[]>(
     this.nodes
-      .filter(
-        (n) =>
-          n.workspace_id === this.activeWorkspace?.id &&
-          !n.parent_id &&
-          n.grid_x === -1 &&
-          n.grid_y === -1,
-      )
+      .filter((n) => !n.parent_id && n.grid_x === -1 && n.grid_y === -1)
       .sort((a, b) => a.sort_order - b.sort_order),
   );
 
@@ -168,6 +226,54 @@ class DashboardStore {
   dockContainerNodes = $derived<DashboardNode[]>(
     this.dockNodes.filter((n) => n.node_type === "container"),
   );
+
+  recentDockNodes = $derived.by<DashboardNode[]>(() => {
+    const dockedIds = new Set(this.dockNodes.map((n) => n.id));
+    const candidates = this.nodes.filter((n) => n.node_type === "action" && !dockedIds.has(n.id));
+
+    return candidates
+      .sort((a, b) => {
+        const usageA = this.appUsageMap[a.id] ?? 0;
+        const usageB = this.appUsageMap[b.id] ?? 0;
+        if (usageA !== usageB) return usageB - usageA;
+        return b.created_at.localeCompare(a.created_at);
+      })
+      .slice(0, 2);
+  });
+
+  appLibraryCategories = $derived.by<AppLibraryCategory[]>(() => {
+    const buckets: Record<AppLibraryCategoryId, DashboardNode[]> = {
+      productivity: [],
+      dev: [],
+      media: [],
+      social: [],
+      utilities: [],
+    };
+
+    const allActions = this.nodes
+      .filter((n) => n.node_type === "action")
+      .sort((a, b) => {
+        const usageA = this.appUsageMap[a.id] ?? 0;
+        const usageB = this.appUsageMap[b.id] ?? 0;
+        if (usageA !== usageB) return usageB - usageA;
+        return a.title.localeCompare(b.title);
+      });
+
+    for (const node of allActions) {
+      const cat = categorizeActionNode(node);
+      buckets[cat].push(node);
+    }
+
+    const order: AppLibraryCategoryId[] = ["productivity", "dev", "media", "social", "utilities"];
+
+    return order
+      .map((id) => ({
+        id,
+        title: CATEGORY_LABELS[id],
+        nodes: buckets[id],
+      }))
+      .filter((cat) => cat.nodes.length > 0);
+  });
 
   openFolder = $derived<DashboardNode | null>(
     this.nodes.find((n) => n.id === this.openFolderId) ?? null,
@@ -197,18 +303,79 @@ class DashboardStore {
       }
     }
 
+    const usageRaw = localStorage.getItem(APP_USAGE_STORAGE_KEY);
+    if (usageRaw) {
+      try {
+        this.appUsageMap = JSON.parse(usageRaw) as Record<string, number>;
+      } catch {
+        // Ignore invalid usage cache
+      }
+    }
+
+    const appearanceRaw = localStorage.getItem(APPEARANCE_STORAGE_KEY);
+    if (appearanceRaw) {
+      try {
+        const prefs = JSON.parse(appearanceRaw) as Partial<AppearancePreferences>;
+        if (prefs.wallpaper) this.wallpaperPreset = prefs.wallpaper;
+        if (typeof prefs.showIconLabels === "boolean") {
+          this.showIconLabels = prefs.showIconLabels;
+        }
+        if (typeof prefs.reducedParallax === "boolean") {
+          this.reducedParallax = prefs.reducedParallax;
+        }
+      } catch {
+        // Ignore invalid appearance cache
+      }
+    }
+
     const savedWsId = localStorage.getItem(WORKSPACE_STORAGE_KEY);
     if (savedWsId && this.workspaces.some((w) => w.id === savedWsId)) {
       this.activeWorkspaceId = savedWsId;
     } else if (this.workspaces.length > 0) {
       this.activeWorkspaceId = this.workspaces[0].id;
     }
+
+    const initialIdx = Math.max(
+      0,
+      this.workspaces.findIndex((w) => w.id === this.activeWorkspaceId),
+    );
+    this.pagePosition = initialIdx;
+    this.rawSwipePagePos = initialIdx;
+    this.springTargetIndex = initialIdx;
   }
 
   init(): () => void {
-    const clockTimer = setInterval(() => {
+    let clockTimer: ReturnType<typeof setInterval> | null = null;
+
+    const startClock = () => {
+      if (clockTimer) clearInterval(clockTimer);
       this.now = new Date();
-    }, 1000);
+      clockTimer = setInterval(() => {
+        this.now = new Date();
+      }, 1000);
+    };
+
+    const stopClock = () => {
+      if (clockTimer) {
+        clearInterval(clockTimer);
+        clockTimer = null;
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      const visible = document.visibilityState !== "hidden";
+      this.isDocumentVisible = visible;
+      if (visible) {
+        startClock();
+      } else {
+        stopClock();
+      }
+    };
+
+    startClock();
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", handleVisibilityChange);
+    }
 
     const etag = localStorage.getItem(ETAG_KEY);
     fetch("/api/v1/bootstrap", {
@@ -221,7 +388,7 @@ class DashboardStore {
         const data = (await res.json()) as BootstrapPayload;
         this.workspaces = data.workspaces ?? [];
         this.nodes = data.nodes ?? [];
-        this.signals = data.signals ?? {};
+        this.signals = { ...this.signals, ...(data.signals ?? {}) };
         this.sanitizeAllWorkspaces();
 
         const storedWs = localStorage.getItem(WORKSPACE_STORAGE_KEY);
@@ -230,6 +397,16 @@ class DashboardStore {
         } else if (this.workspaces.length > 0) {
           this.activeWorkspaceId = this.workspaces[0].id;
           localStorage.setItem(WORKSPACE_STORAGE_KEY, this.workspaces[0].id);
+        }
+
+        const syncedIdx = Math.max(
+          0,
+          this.workspaces.findIndex((w) => w.id === this.activeWorkspaceId),
+        );
+        if (!this.isPageDragging && this.springRafId === null) {
+          this.pagePosition = syncedIdx;
+          this.rawSwipePagePos = syncedIdx;
+          this.springTargetIndex = syncedIdx;
         }
 
         this.persistSnapshot();
@@ -242,18 +419,750 @@ class DashboardStore {
     sse.onmessage = (event: MessageEvent<string>) => {
       const delta = JSON.parse(event.data) as SignalDelta;
       this.signals[delta.key] = delta.value;
-      this.persistSnapshot();
       this.hydrationStatus = "Phase 2: Live SSE";
     };
 
     return () => {
-      clearInterval(clockTimer);
+      stopClock();
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", handleVisibilityChange);
+      }
+      this.stopPageSpring();
       sse.close();
     };
   }
 
+  getWorkspaceRootNodes(workspaceId: string): DashboardNode[] {
+    if (!workspaceId) return [];
+    return this.nodes
+      .filter((n) => n.workspace_id === workspaceId && !n.parent_id && n.grid_x > 0 && n.grid_y > 0)
+      .sort((a, b) => a.grid_y - b.grid_y || a.grid_x - b.grid_x || a.sort_order - b.sort_order);
+  }
+
+  recordAppLaunch(nodeId: string): void {
+    this.appUsageMap[nodeId] = Date.now();
+    try {
+      localStorage.setItem(APP_USAGE_STORAGE_KEY, JSON.stringify(this.appUsageMap));
+    } catch {
+      // Ignore storage quota errors
+    }
+  }
+
+  // =========================================================================
+  // Step 4: Control Center & Appearance Preferences
+  // =========================================================================
+
+  private persistAppearance(): void {
+    try {
+      localStorage.setItem(
+        APPEARANCE_STORAGE_KEY,
+        JSON.stringify({
+          wallpaper: this.wallpaperPreset,
+          showIconLabels: this.showIconLabels,
+          reducedParallax: this.reducedParallax,
+        }),
+      );
+    } catch {
+      // Ignore storage quota errors
+    }
+  }
+
+  toggleControlCenter(): void {
+    this.closeContextMenu();
+    this.closeSpotlight();
+    this.closeAppLibrary();
+    this.isControlCenterOpen = !this.isControlCenterOpen;
+  }
+
+  closeControlCenter(): void {
+    this.isControlCenterOpen = false;
+  }
+
+  setWallpaperPreset(preset: WallpaperPreset): void {
+    this.wallpaperPreset = preset;
+    this.persistAppearance();
+  }
+
+  toggleIconLabels(): void {
+    this.showIconLabels = !this.showIconLabels;
+    this.persistAppearance();
+  }
+
+  toggleReducedParallax(): void {
+    this.reducedParallax = !this.reducedParallax;
+    this.persistAppearance();
+  }
+
+  // =========================================================================
+  // Step 5: Interactive Smart Stacks
+  // =========================================================================
+
+  getStackItems(rootNode: DashboardNode): DashboardNode[] {
+    if (
+      rootNode.parent_id ||
+      rootNode.node_type === "action" ||
+      rootNode.node_type === "container"
+    ) {
+      return [rootNode];
+    }
+    const children = this.getChildren(rootNode.id);
+    return [rootNode, ...children];
+  }
+
+  getActiveStackIndex(rootNodeId: string): number {
+    return this.activeStackIndices[rootNodeId] ?? 0;
+  }
+
+  setSmartStackIndex(rootNodeId: string, index: number): void {
+    const rootNode = this.nodes.find((n) => n.id === rootNodeId);
+    if (!rootNode) return;
+    const total = this.getStackItems(rootNode).length;
+    this.activeStackIndices[rootNodeId] = ((index % total) + total) % total;
+  }
+
+  cycleSmartStack(rootNodeId: string, delta: number): void {
+    const current = this.getActiveStackIndex(rootNodeId);
+    this.setSmartStackIndex(rootNodeId, current + delta);
+  }
+
+  async unstackActiveWidget(rootNodeId: string): Promise<void> {
+    this.closeContextMenu();
+    const rootNode = this.nodes.find((n) => n.id === rootNodeId);
+    if (!rootNode) return;
+
+    const stackItems = this.getStackItems(rootNode);
+    if (stackItems.length <= 1) return;
+
+    const activeIdx = this.getActiveStackIndex(rootNodeId);
+    const targetToExtract =
+      activeIdx > 0 ? stackItems[activeIdx] : stackItems[stackItems.length - 1];
+
+    const w = rootNode.width || 2;
+    const h = rootNode.height || 2;
+    const free = this.findFirstFreeCell(w, h) ?? { x: 1, y: 1 };
+
+    targetToExtract.parent_id = null;
+    targetToExtract.grid_x = free.x;
+    targetToExtract.grid_y = free.y;
+    targetToExtract.width = w;
+    targetToExtract.height = h;
+    targetToExtract.sort_order = free.y * 100 + free.x;
+    this.activeStackIndices[rootNodeId] = 0;
+    this.persistSnapshot();
+
+    void fetch("/api/v1/nodes/reorder", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify([
+        {
+          id: targetToExtract.id,
+          sort_order: targetToExtract.sort_order,
+          grid_x: free.x,
+          grid_y: free.y,
+          width: w,
+          height: h,
+          parent_id: null,
+        },
+      ]),
+    });
+  }
+
+  // =========================================================================
+  // Step 3: Bi-Directional FLIP Folder Morphing & App Library
+  // =========================================================================
+
+  registerFolderAnchor(nodeId: string, el: HTMLElement | null): void {
+    if (el) {
+      this.folderAnchorEls.set(nodeId, el);
+    } else {
+      this.folderAnchorEls.delete(nodeId);
+    }
+  }
+
+  openFolderWithOrigin(nodeId: string, originEl?: HTMLElement | null): void {
+    if (this.folderCloseTimer) {
+      clearTimeout(this.folderCloseTimer);
+      this.folderCloseTimer = null;
+    }
+    this.isFolderClosing = false;
+    this.closeContextMenu();
+    this.closeControlCenter();
+    this.closeAppLibrary();
+    this.flippedNodeId = null;
+
+    const targetEl = originEl ?? this.folderAnchorEls.get(nodeId) ?? null;
+    if (targetEl) {
+      const rect = targetEl.getBoundingClientRect();
+      this.openFolderOrigin = {
+        cx: rect.left + rect.width / 2,
+        cy: rect.top + rect.height / 2,
+        width: rect.width,
+        height: rect.height,
+      };
+    } else {
+      this.openFolderOrigin = null;
+    }
+    this.openFolderId = nodeId;
+  }
+
+  closeFolder(): void {
+    if (!this.openFolderId || this.isFolderClosing) return;
+
+    const currentId = this.openFolderId;
+    const anchorEl = this.folderAnchorEls.get(currentId);
+    if (anchorEl) {
+      const rect = anchorEl.getBoundingClientRect();
+      this.openFolderOrigin = {
+        cx: rect.left + rect.width / 2,
+        cy: rect.top + rect.height / 2,
+        width: rect.width,
+        height: rect.height,
+      };
+    }
+
+    this.isFolderClosing = true;
+    if (this.folderCloseTimer) clearTimeout(this.folderCloseTimer);
+    this.folderCloseTimer = setTimeout(() => {
+      this.folderCloseTimer = null;
+      this.openFolderId = null;
+      this.isFolderClosing = false;
+    }, 260);
+  }
+
+  openAppLibrary(originEl?: HTMLElement | null): void {
+    this.closeContextMenu();
+    this.closeControlCenter();
+    this.closeSpotlight();
+    this.openFolderId = null;
+    this.isFolderClosing = false;
+    this.flippedNodeId = null;
+    if (originEl) {
+      const rect = originEl.getBoundingClientRect();
+      this.appLibraryOrigin = {
+        cx: rect.left + rect.width / 2,
+        cy: rect.top + rect.height / 2,
+      };
+    } else {
+      this.appLibraryOrigin = null;
+    }
+    this.isAppLibraryOpen = true;
+  }
+
+  closeAppLibrary(): void {
+    this.isAppLibraryOpen = false;
+  }
+
+  async startGalleryWidgetDrag(
+    clientX: number,
+    clientY: number,
+    previewBounds: ScreenBounds,
+  ): Promise<void> {
+    if (!this.activeWorkspace) return;
+
+    const t = this.nodeModal.node_type;
+    const width = Math.max(1, Math.min(GRID_COLS, Number(this.nodeModal.width) || 2));
+    const height = Math.max(1, Math.min(GRID_ROWS, Number(this.nodeModal.height) || 2));
+    const free = this.findFirstFreeCell(width, height) ?? { x: 1, y: 1 };
+
+    const defaultTitleMap: Record<NodeType, string> = {
+      action: "Untitled",
+      container: "Folder",
+      clock: "Amsterdam",
+      search: "Search",
+      todo: "Reminders",
+      calendar: "Calendar",
+    };
+
+    const finalTitle = this.nodeModal.title.trim() || defaultTitleMap[t];
+    const nowIso = new Date().toISOString();
+
+    const optimisticNode: DashboardNode = {
+      id: crypto.randomUUID(),
+      workspace_id: this.activeWorkspace.id,
+      parent_id: null,
+      sort_order: free.y * 100 + free.x,
+      grid_x: free.x,
+      grid_y: free.y,
+      title: finalTitle,
+      icon: null,
+      node_type: t,
+      url: null,
+      width,
+      height,
+      settings: structuredClone($state.snapshot(this.nodeModal.settings)),
+      created_at: nowIso,
+      updated_at: nowIso,
+    };
+
+    this.nodes.push(optimisticNode);
+    this.nodeModal.open = false;
+    this.persistSnapshot();
+
+    this.setDragGrabOffset(Math.floor(width / 2), Math.floor(height / 2));
+    this.promoteHoldToDirectDrag(optimisticNode.id, clientX, clientY, previewBounds);
+
+    void fetch("/api/v1/nodes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(optimisticNode),
+    });
+  }
+
+  // =========================================================================
+  // Step 1: Continuous Spatial Paging & 120Hz Spring Physics
+  // =========================================================================
+
+  private applyRubberBand(rawPagePos: number): number {
+    const maxIndex = Math.max(0, this.workspaces.length - 1);
+    const limit = 0.26;
+    if (rawPagePos < 0) {
+      const over = -rawPagePos;
+      return -limit * (1 - Math.exp(-over / limit));
+    }
+    if (rawPagePos > maxIndex) {
+      const over = rawPagePos - maxIndex;
+      return maxIndex + limit * (1 - Math.exp(-over / limit));
+    }
+    return rawPagePos;
+  }
+
+  private stopPageSpring(): void {
+    if (this.springRafId !== null && typeof cancelAnimationFrame !== "undefined") {
+      cancelAnimationFrame(this.springRafId);
+      this.springRafId = null;
+    }
+  }
+
+  springToPage(targetIndex: number, initialVelocity = 0): void {
+    const maxIndex = Math.max(0, this.workspaces.length - 1);
+    const clampedIndex = Math.max(0, Math.min(maxIndex, targetIndex));
+    this.springTargetIndex = clampedIndex;
+    this.rawSwipePagePos = clampedIndex;
+    this.pageVelocity = initialVelocity;
+
+    if (typeof requestAnimationFrame === "undefined") {
+      this.pagePosition = clampedIndex;
+      return;
+    }
+
+    this.stopPageSpring();
+    this.springLastTime = performance.now();
+
+    const stiffness = 320;
+    const damping = 34;
+
+    const step = (now: number) => {
+      const dt = Math.min((now - this.springLastTime) / 1000, 0.032);
+      this.springLastTime = now;
+
+      const displacement = this.pagePosition - this.springTargetIndex;
+      const springForce = -stiffness * displacement;
+      const dampingForce = -damping * this.pageVelocity;
+      const acceleration = springForce + dampingForce;
+
+      this.pageVelocity += acceleration * dt;
+      this.pagePosition += this.pageVelocity * dt;
+
+      if (
+        Math.abs(this.pagePosition - this.springTargetIndex) < 0.0008 &&
+        Math.abs(this.pageVelocity) < 0.008
+      ) {
+        this.pagePosition = this.springTargetIndex;
+        this.pageVelocity = 0;
+        this.springRafId = null;
+        return;
+      }
+
+      this.springRafId = requestAnimationFrame(step);
+    };
+
+    this.springRafId = requestAnimationFrame(step);
+  }
+
+  beginPageSwipe(): void {
+    this.stopPageSpring();
+    this.isPageDragging = true;
+    this.rawSwipePagePos = this.pagePosition;
+    this.pageVelocity = 0;
+  }
+
+  updatePageSwipe(deltaPages: number, dtMs: number): void {
+    if (!this.isPageDragging) {
+      this.beginPageSwipe();
+    }
+    this.rawSwipePagePos += deltaPages;
+    const nextPos = this.applyRubberBand(this.rawSwipePagePos);
+    if (dtMs > 0) {
+      const instantVelocity = (nextPos - this.pagePosition) / (dtMs / 1000);
+      this.pageVelocity = this.pageVelocity * 0.35 + instantVelocity * 0.65;
+    }
+    this.pagePosition = nextPos;
+  }
+
+  endPageSwipe(): void {
+    if (!this.isPageDragging) return;
+    this.isPageDragging = false;
+
+    const maxIndex = Math.max(0, this.workspaces.length - 1);
+    const currentAnchor = this.activeWorkspaceIndex;
+    const projected = this.pagePosition + this.pageVelocity * 0.16;
+    const diff = projected - currentAnchor;
+
+    let nextIdx = currentAnchor;
+    if (diff > 0.22) {
+      nextIdx = Math.min(maxIndex, currentAnchor + 1);
+    } else if (diff < -0.22) {
+      nextIdx = Math.max(0, currentAnchor - 1);
+    } else {
+      nextIdx = Math.max(0, Math.min(maxIndex, Math.round(projected)));
+    }
+
+    const targetWs = this.workspaces[nextIdx];
+    if (targetWs && targetWs.id !== this.activeWorkspaceId) {
+      this.pageSlideDirection = nextIdx > currentAnchor ? "right" : "left";
+      this.activeWorkspaceId = targetWs.id;
+      localStorage.setItem(WORKSPACE_STORAGE_KEY, targetWs.id);
+      this.openFolderId = null;
+      this.isFolderClosing = false;
+      this.flippedNodeId = null;
+      this.closeContextMenu();
+      this.clearDragPreview();
+    }
+
+    this.springToPage(nextIdx, this.pageVelocity);
+  }
+
+  handleWheelPaging(deltaX: number, viewportWidth: number): void {
+    const now = performance.now();
+    if (now < this.wheelLockedAfterSnapUntil) return;
+
+    const dt = this.wheelLastEventAt > 0 ? Math.max(8, now - this.wheelLastEventAt) : 16;
+    this.wheelLastEventAt = now;
+
+    const isDiscreteStep = Math.abs(deltaX) >= 95 && dt > 90;
+    if (isDiscreteStep && !this.isPageDragging) {
+      this.wheelLockedAfterSnapUntil = now + 420;
+      if (deltaX > 0) {
+        this.selectNextWorkspace();
+      } else {
+        this.selectPrevWorkspace();
+      }
+      return;
+    }
+
+    const stride = Math.max(viewportWidth * 0.78, 520);
+    const deltaPages = deltaX / stride;
+    this.updatePageSwipe(deltaPages, dt);
+
+    const currentAnchor = this.activeWorkspaceIndex;
+    const displacement = this.rawSwipePagePos - currentAnchor;
+    if (Math.abs(displacement) > 0.55) {
+      if (this.wheelGestureTimer) {
+        clearTimeout(this.wheelGestureTimer);
+        this.wheelGestureTimer = null;
+      }
+      this.wheelLockedAfterSnapUntil = now + 380;
+      this.endPageSwipe();
+      return;
+    }
+
+    if (this.wheelGestureTimer) {
+      clearTimeout(this.wheelGestureTimer);
+    }
+    this.wheelGestureTimer = setTimeout(() => {
+      this.wheelGestureTimer = null;
+      this.endPageSwipe();
+    }, 115);
+  }
+
+  // =========================================================================
+  // Step 2: Foreground Platter Lift, Quick Actions & Direct Hold-to-Drag
+  // =========================================================================
+
+  openContextMenu(
+    node: DashboardNode,
+    event?: MouseEvent | PointerEvent,
+    anchorEl?: HTMLElement | null,
+    inDock = false,
+  ): void {
+    event?.preventDefault();
+    event?.stopPropagation();
+    this.closeControlCenter();
+    this.flippedNodeId = null;
+
+    const vw = typeof window !== "undefined" ? window.innerWidth : 1280;
+    const vh = typeof window !== "undefined" ? window.innerHeight : 800;
+    const menuWidth = 236;
+    const menuHeight = 310;
+    const pad = 16;
+
+    let anchorRect: ScreenBounds | null = null;
+    if (anchorEl) {
+      const r = anchorEl.getBoundingClientRect();
+      anchorRect = {
+        left: r.left,
+        top: r.top,
+        width: r.width,
+        height: r.height,
+      };
+    }
+
+    let x = event ? event.clientX : vw / 2;
+    let y = event ? event.clientY : vh / 2;
+    let originY: "top" | "bottom" = "top";
+    let originX: "left" | "right" = "left";
+
+    if (anchorRect) {
+      const centerX = anchorRect.left + anchorRect.width / 2;
+      const isRightSide = centerX > vw * 0.62;
+      originX = isRightSide ? "right" : "left";
+
+      if (isRightSide) {
+        x = Math.max(
+          pad,
+          Math.min(anchorRect.left + anchorRect.width - menuWidth, vw - menuWidth - pad),
+        );
+      } else {
+        x = Math.max(pad, Math.min(anchorRect.left, vw - menuWidth - pad));
+      }
+
+      const spaceBelow = vh - (anchorRect.top + anchorRect.height);
+      const spaceAbove = anchorRect.top;
+
+      if (inDock || (spaceBelow < menuHeight + 24 && spaceAbove > spaceBelow)) {
+        originY = "bottom";
+        y = Math.max(pad, anchorRect.top - menuHeight - 12);
+      } else {
+        originY = "top";
+        y = Math.min(vh - menuHeight - pad, anchorRect.top + anchorRect.height + 12);
+      }
+    } else {
+      x = Math.max(pad, Math.min(x + 8, vw - menuWidth - pad));
+      y = Math.max(pad, Math.min(y + 4, vh - menuHeight - pad));
+    }
+
+    this.contextMenu = {
+      open: true,
+      nodeId: node.id,
+      x,
+      y,
+      anchorRect,
+      inDock,
+      transformOrigin: `${originY} ${originX}`,
+    };
+  }
+
+  closeContextMenu(): void {
+    if (this.contextMenu.open) {
+      this.contextMenu.open = false;
+      this.contextMenu.nodeId = null;
+      this.contextMenu.anchorRect = null;
+    }
+  }
+
+  promoteHoldToDirectDrag(
+    nodeId: string,
+    startX: number,
+    startY: number,
+    initialBounds: ScreenBounds,
+  ): void {
+    this.closeContextMenu();
+    this.closeControlCenter();
+    this.flippedNodeId = null;
+    this.isEditMode = true;
+    this.activeDragNodeId = nodeId;
+    this.isDirectDragging = true;
+    this.directDragStartPointer = { x: startX, y: startY };
+    this.directDragDelta = { x: 0, y: 0 };
+    this.directDragInitialBounds = initialBounds;
+    this.activeDragLiveBounds = { id: nodeId, rect: initialBounds };
+    this.folderMergeTargetId = null;
+
+    const node = this.nodes.find((n) => n.id === nodeId);
+    if (node && !node.parent_id && node.grid_x > 0) {
+      const rect: GridRect = {
+        x: node.grid_x,
+        y: node.grid_y,
+        w: node.width || 1,
+        h: node.height || 1,
+      };
+      this.dropPreview = rect;
+      this.previewPositions = { [node.id]: rect };
+    }
+  }
+
+  updateDirectDrag(clientX: number, clientY: number): void {
+    if (!this.isDirectDragging || !this.activeDragNodeId) return;
+    const dx = clientX - this.directDragStartPointer.x;
+    const dy = clientY - this.directDragStartPointer.y;
+    this.directDragDelta = { x: dx, y: dy };
+
+    if (this.directDragInitialBounds) {
+      this.activeDragLiveBounds = {
+        id: this.activeDragNodeId,
+        rect: {
+          left: this.directDragInitialBounds.left + dx,
+          top: this.directDragInitialBounds.top + dy,
+          width: this.directDragInitialBounds.width,
+          height: this.directDragInitialBounds.height,
+        },
+      };
+    }
+  }
+
+  async finishDirectDrag(_clientX?: number, clientY?: number): Promise<void> {
+    if (!this.isDirectDragging) return;
+    const draggedId = this.activeDragNodeId;
+    const mergeTargetId = this.folderMergeTargetId;
+
+    if (draggedId && this.activeDragLiveBounds?.id === draggedId) {
+      this.settlingSeq += 1;
+      this.settlingDrop = {
+        id: draggedId,
+        rect: this.activeDragLiveBounds.rect,
+        seq: this.settlingSeq,
+      };
+    }
+
+    this.isDirectDragging = false;
+    this.directDragDelta = { x: 0, y: 0 };
+    this.directDragInitialBounds = null;
+    this.activeDragLiveBounds = null;
+    this.activeDragNodeId = null;
+    this.folderMergeTargetId = null;
+    this.dragGrabOffset = { col: 0, row: 0 };
+
+    if (!draggedId || !this.isEditMode) {
+      this.clearDragPreview();
+      return;
+    }
+
+    const sourceNode = this.nodes.find((n) => n.id === draggedId);
+    if (!sourceNode) {
+      this.clearDragPreview();
+      return;
+    }
+
+    if (mergeTargetId && mergeTargetId !== draggedId) {
+      const mergeTargetNode = this.nodes.find((n) => n.id === mergeTargetId);
+      if (mergeTargetNode) {
+        this.clearDragPreview();
+        await this.mergeNodesIntoFolder(sourceNode, mergeTargetNode);
+        return;
+      }
+    }
+
+    if (
+      typeof window !== "undefined" &&
+      clientY !== undefined &&
+      clientY > window.innerHeight - 86 &&
+      (sourceNode.node_type === "action" || sourceNode.node_type === "container")
+    ) {
+      this.clearDragPreview();
+      await this.pinNodeToDock(sourceNode);
+      return;
+    }
+
+    if (this.dropPreview && Object.keys(this.previewPositions).length > 0) {
+      await this.commitPreviewLayout();
+      return;
+    }
+
+    this.clearDragPreview();
+  }
+
+  recordActiveDragRect(nodeId: string, rect: DOMRect): void {
+    this.activeDragLiveBounds = {
+      id: nodeId,
+      rect: {
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+        height: rect.height,
+      },
+    };
+  }
+
+  consumeReleaseRect(nodeId: string): ScreenBounds | null {
+    if (this.settlingDrop && this.settlingDrop.id === nodeId) {
+      const rect = this.settlingDrop.rect;
+      this.settlingDrop = null;
+      return rect;
+    }
+    return null;
+  }
+
+  async togglePinToDock(nodeId: string): Promise<void> {
+    this.closeContextMenu();
+    const node = this.nodes.find((n) => n.id === nodeId);
+    if (!node) return;
+
+    const isCurrentlyDocked = !node.parent_id && node.grid_x === -1 && node.grid_y === -1;
+    if (isCurrentlyDocked) {
+      const free = this.findFirstFreeCell(1, 1);
+      if (!free || !this.activeWorkspace) return;
+      node.workspace_id = this.activeWorkspace.id;
+      node.parent_id = null;
+      node.grid_x = free.x;
+      node.grid_y = free.y;
+      node.width = 1;
+      node.height = 1;
+      node.sort_order = free.y * 100 + free.x;
+      this.persistSnapshot();
+
+      void fetch(`/api/v1/nodes/${node.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workspace_id: this.activeWorkspace.id,
+          parent_id: null,
+          grid_x: free.x,
+          grid_y: free.y,
+          width: 1,
+          height: 1,
+          sort_order: node.sort_order,
+        }),
+      });
+    } else {
+      await this.pinNodeToDock(node);
+    }
+  }
+
+  private async pinNodeToDock(node: DashboardNode): Promise<void> {
+    if (node.node_type !== "action" && node.node_type !== "container") return;
+    node.parent_id = null;
+    node.grid_x = -1;
+    node.grid_y = -1;
+    node.width = 1;
+    node.height = 1;
+    node.sort_order = this.dockNodes.length + 1;
+    this.persistSnapshot();
+
+    void fetch("/api/v1/nodes/reorder", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify([
+        {
+          id: node.id,
+          sort_order: node.sort_order,
+          grid_x: -1,
+          grid_y: -1,
+          width: 1,
+          height: 1,
+          parent_id: null,
+        },
+      ]),
+    });
+  }
+
+  // =========================================================================
+  // Spotlight, Widget Inspection & Grid Layout Engine
+  // =========================================================================
+
   openSpotlight(initialQuery = ""): void {
     this.closeContextMenu();
+    this.closeControlCenter();
+    this.closeAppLibrary();
     this.flippedNodeId = null;
     this.spotlightInitialQuery = initialQuery;
     this.isSpotlightOpen = true;
@@ -293,7 +1202,7 @@ class DashboardStore {
 
     await this.updateNodeSettings(todoNode.id, {
       ...todoNode.settings,
-      todos: [...currentTodos, newItem],
+      todos: [newItem, ...currentTodos],
     });
     return true;
   }
@@ -332,48 +1241,6 @@ class DashboardStore {
     return true;
   }
 
-  openFolderWithOrigin(nodeId: string, originEl?: HTMLElement | null): void {
-    this.closeContextMenu();
-    this.flippedNodeId = null;
-    if (originEl) {
-      const rect = originEl.getBoundingClientRect();
-      this.openFolderOrigin = {
-        cx: rect.left + rect.width / 2,
-        cy: rect.top + rect.height / 2,
-      };
-    } else {
-      this.openFolderOrigin = null;
-    }
-    this.openFolderId = nodeId;
-  }
-
-  openContextMenu(node: DashboardNode, event: MouseEvent): void {
-    event.preventDefault();
-    event.stopPropagation();
-    this.flippedNodeId = null;
-
-    const menuWidth = 228;
-    const menuHeight = 260;
-    const pad = 16;
-
-    const x = Math.max(pad, Math.min(event.clientX + 8, window.innerWidth - menuWidth - pad));
-    const y = Math.max(pad, Math.min(event.clientY + 4, window.innerHeight - menuHeight - pad));
-
-    this.contextMenu = {
-      open: true,
-      nodeId: node.id,
-      x,
-      y,
-    };
-  }
-
-  closeContextMenu(): void {
-    if (this.contextMenu.open) {
-      this.contextMenu.open = false;
-      this.contextMenu.nodeId = null;
-    }
-  }
-
   inspectNode(node: DashboardNode, event?: MouseEvent): void {
     event?.stopPropagation();
     event?.preventDefault();
@@ -383,6 +1250,7 @@ class DashboardStore {
       !node.parent_id &&
       node.grid_x > 0 &&
       node.node_type !== "action" &&
+      node.node_type !== "container" &&
       (node.width >= 2 || node.height >= 2);
 
     if (isRootMultiCellWidget) {
@@ -493,11 +1361,12 @@ class DashboardStore {
 
   async extractNodeFromFolderToGrid(nodeId: string): Promise<void> {
     const node = this.nodes.find((n) => n.id === nodeId);
-    if (!node || !node.parent_id) return;
+    if (!node || !node.parent_id || !this.activeWorkspace) return;
 
     const free = this.findFirstFreeCell(1, 1);
     if (!free) return;
 
+    node.workspace_id = this.activeWorkspace.id;
     node.parent_id = null;
     node.grid_x = free.x;
     node.grid_y = free.y;
@@ -505,31 +1374,24 @@ class DashboardStore {
     node.height = 1;
     node.sort_order = free.y * 100 + free.x;
     this.openFolderId = null;
+    this.isFolderClosing = false;
     this.persistSnapshot();
 
-    void fetch("/api/v1/nodes/reorder", {
-      method: "POST",
+    void fetch(`/api/v1/nodes/${node.id}`, {
+      method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify([
-        {
-          id: node.id,
-          sort_order: node.sort_order,
-          grid_x: free.x,
-          grid_y: free.y,
-          width: 1,
-          height: 1,
-          parent_id: null,
-        },
-      ]),
+      body: JSON.stringify({
+        workspace_id: this.activeWorkspace.id,
+        parent_id: null,
+        sort_order: node.sort_order,
+        grid_x: free.x,
+        grid_y: free.y,
+        width: 1,
+        height: 1,
+      }),
     });
   }
 
-  /**
-   * Returns the effective live coordinates & dimensions of a node.
-   * CRITICAL: While `activeDragNodeId === node.id`, keep the dragged node anchored
-   * at its original DOM grid cell so `@dnd-kit`'s `translate3d` transform tracks
-   * the pointer smoothly without fighting CSS Grid placement.
-   */
   getEffectiveRect(node: DashboardNode): GridRect {
     if (this.activeDragNodeId === node.id) {
       return {
@@ -743,6 +1605,11 @@ class DashboardStore {
     return cascadeResult;
   }
 
+  holdGridReflowOnTarget(): void {
+    this.dropPreview = null;
+    this.previewPositions = {};
+  }
+
   setFolderMergeTarget(targetId: string | null): void {
     this.folderMergeTargetId = targetId;
     if (targetId) {
@@ -866,6 +1733,7 @@ class DashboardStore {
       return;
     }
 
+    const activeWsId = this.activeWorkspace?.id;
     const updates: {
       id: string;
       sort_order: number;
@@ -881,7 +1749,9 @@ class DashboardStore {
       if (!node) continue;
 
       const nextSortOrder = rect.y * 100 + rect.x;
+      const wsChanged = Boolean(activeWsId && node.workspace_id !== activeWsId);
       const changed =
+        wsChanged ||
         node.parent_id !== null ||
         node.grid_x !== rect.x ||
         node.grid_y !== rect.y ||
@@ -889,6 +1759,9 @@ class DashboardStore {
         node.height !== rect.h ||
         node.sort_order !== nextSortOrder;
 
+      if (activeWsId) {
+        node.workspace_id = activeWsId;
+      }
       node.parent_id = null;
       node.grid_x = rect.x;
       node.grid_y = rect.y;
@@ -896,7 +1769,21 @@ class DashboardStore {
       node.height = rect.h;
       node.sort_order = nextSortOrder;
 
-      if (changed) {
+      if (wsChanged && activeWsId) {
+        void fetch(`/api/v1/nodes/${node.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            workspace_id: activeWsId,
+            parent_id: null,
+            sort_order: nextSortOrder,
+            grid_x: rect.x,
+            grid_y: rect.y,
+            width: rect.w,
+            height: rect.h,
+          }),
+        });
+      } else if (changed) {
         updates.push({
           id: node.id,
           sort_order: nextSortOrder,
@@ -925,7 +1812,46 @@ class DashboardStore {
     sourceNode: DashboardNode,
     targetNode: DashboardNode,
   ): Promise<void> {
-    if (sourceNode.node_type !== "action" || sourceNode.id === targetNode.id) return;
+    if (sourceNode.id === targetNode.id) return;
+
+    // Step 5: Smart Stack Merge for identical-dimension widgets
+    const isSourceWidget =
+      sourceNode.node_type !== "action" && sourceNode.node_type !== "container";
+    const isTargetWidget =
+      targetNode.node_type !== "action" && targetNode.node_type !== "container";
+
+    if (
+      isSourceWidget &&
+      isTargetWidget &&
+      !targetNode.parent_id &&
+      (sourceNode.width || 2) === (targetNode.width || 2) &&
+      (sourceNode.height || 2) === (targetNode.height || 2)
+    ) {
+      const existingChildren = this.getChildren(targetNode.id);
+      sourceNode.parent_id = targetNode.id;
+      sourceNode.sort_order = existingChildren.length + 1;
+      this.activeStackIndices[targetNode.id] = existingChildren.length + 1;
+      this.persistSnapshot();
+
+      void fetch("/api/v1/nodes/reorder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify([
+          {
+            id: sourceNode.id,
+            sort_order: sourceNode.sort_order,
+            grid_x: targetNode.grid_x,
+            grid_y: targetNode.grid_y,
+            width: targetNode.width,
+            height: targetNode.height,
+            parent_id: targetNode.id,
+          },
+        ]),
+      });
+      return;
+    }
+
+    if (sourceNode.node_type !== "action") return;
 
     if (targetNode.node_type === "container") {
       const existingChildren = this.getChildren(targetNode.id);
@@ -1113,24 +2039,31 @@ class DashboardStore {
   }
 
   selectWorkspace(id: string): void {
-    if (id === this.activeWorkspace?.id) return;
-    const oldIndex = this.activeWorkspaceIndex;
     const newIndex = this.workspaces.findIndex((w) => w.id === id);
-    if (newIndex !== -1) {
+    if (newIndex === -1) return;
+
+    const oldIndex = this.activeWorkspaceIndex;
+    if (id !== this.activeWorkspace?.id) {
       this.pageSlideDirection = newIndex > oldIndex ? "right" : "left";
+      this.activeWorkspaceId = id;
+      localStorage.setItem(WORKSPACE_STORAGE_KEY, id);
+      this.openFolderId = null;
+      this.isFolderClosing = false;
+      this.flippedNodeId = null;
+      this.closeContextMenu();
+      this.clearDragPreview();
     }
-    this.activeWorkspaceId = id;
-    localStorage.setItem(WORKSPACE_STORAGE_KEY, id);
-    this.openFolderId = null;
-    this.flippedNodeId = null;
-    this.closeContextMenu();
-    this.clearDragPreview();
+
+    this.springToPage(newIndex, this.pageVelocity);
   }
 
   selectNextWorkspace(): boolean {
     if (this.workspaces.length <= 1) return false;
     const nextIdx = this.activeWorkspaceIndex + 1;
-    if (nextIdx >= this.workspaces.length) return false;
+    if (nextIdx >= this.workspaces.length) {
+      this.springToPage(this.activeWorkspaceIndex, 1.45);
+      return false;
+    }
     this.selectWorkspace(this.workspaces[nextIdx].id);
     return true;
   }
@@ -1138,7 +2071,10 @@ class DashboardStore {
   selectPrevWorkspace(): boolean {
     if (this.workspaces.length <= 1) return false;
     const prevIdx = this.activeWorkspaceIndex - 1;
-    if (prevIdx < 0) return false;
+    if (prevIdx < 0) {
+      this.springToPage(0, -1.45);
+      return false;
+    }
     this.selectWorkspace(this.workspaces[prevIdx].id);
     return true;
   }
@@ -1184,6 +2120,7 @@ class DashboardStore {
   toggleEditMode(): void {
     this.isEditMode = !this.isEditMode;
     this.closeContextMenu();
+    this.closeControlCenter();
     if (!this.isEditMode) {
       this.flippedNodeId = null;
       this.clearDragPreview();
@@ -1192,6 +2129,7 @@ class DashboardStore {
 
   enterEditMode(): void {
     this.closeContextMenu();
+    this.closeControlCenter();
     if (!this.isEditMode) {
       this.isEditMode = true;
     }
@@ -1208,6 +2146,7 @@ class DashboardStore {
 
   handleDragStart = (event: { operation?: { source?: { id?: string | number } | null } }): void => {
     this.closeContextMenu();
+    this.closeControlCenter();
     this.flippedNodeId = null;
     const id = event.operation?.source?.id;
     this.activeDragNodeId = id ? String(id) : null;
@@ -1227,10 +2166,6 @@ class DashboardStore {
     }
   };
 
-  /**
-   * Called directly by `@dnd-kit/svelte` whenever a dragged item hovers over a droppable
-   * (`cell:x:y`, another `SortableNode`, or `dock:dropzone`).
-   */
   handleDragOver = (event: DragEndEventPayload): void => {
     if (!this.isEditMode || !this.activeDragNodeId) return;
     const rawTargetId = event.operation?.target?.id;
@@ -1240,33 +2175,22 @@ class DashboardStore {
     if (targetId === "dock:dropzone") {
       this.dropPreview = null;
       this.previewPositions = {};
-      return;
-    }
-
-    if (targetId.startsWith("cell:")) {
-      const parts = targetId.split(":");
-      const col = Number(parts[1]);
-      const row = Number(parts[2]);
-      if (col >= 1 && row >= 1) {
-        this.updateDragReflow(col, row);
-      }
-      return;
-    }
-
-    if (targetId !== this.activeDragNodeId) {
-      const targetNode = this.nodes.find((n) => n.id === targetId);
-      if (targetNode && !targetNode.parent_id && targetNode.grid_x > 0) {
-        this.updateDragReflow(
-          targetNode.grid_x + this.dragGrabOffset.col,
-          targetNode.grid_y + this.dragGrabOffset.row,
-        );
-      }
     }
   };
 
   handleDragEnd = async (event: DragEndEventPayload): Promise<void> => {
     const draggedId = this.activeDragNodeId;
     const mergeTargetId = this.folderMergeTargetId;
+
+    if (draggedId && this.activeDragLiveBounds?.id === draggedId) {
+      this.settlingSeq += 1;
+      this.settlingDrop = {
+        id: draggedId,
+        rect: this.activeDragLiveBounds.rect,
+        seq: this.settlingSeq,
+      };
+    }
+    this.activeDragLiveBounds = null;
     this.activeDragNodeId = null;
     this.folderMergeTargetId = null;
     this.dragGrabOffset = { col: 0, row: 0 };
@@ -1292,7 +2216,6 @@ class DashboardStore {
       return;
     }
 
-    // Case 0: Folder Creation / Container Drop via Dwell-Hold Gesture
     if (mergeTargetId && mergeTargetId !== sourceId) {
       const mergeTargetNode = this.nodes.find((n) => n.id === mergeTargetId);
       if (mergeTargetNode) {
@@ -1302,41 +2225,14 @@ class DashboardStore {
       }
     }
 
-    // Case 1: Dropped onto the bottom Dock dropzone ("dock:dropzone")
     if (targetId === "dock:dropzone") {
       this.clearDragPreview();
-      if (sourceNode.node_type !== "action" && sourceNode.node_type !== "container") {
-        return;
-      }
-      sourceNode.parent_id = null;
-      sourceNode.grid_x = -1;
-      sourceNode.grid_y = -1;
-      sourceNode.width = 1;
-      sourceNode.height = 1;
-      sourceNode.sort_order = this.dockNodes.length + 1;
-      this.persistSnapshot();
-
-      void fetch("/api/v1/nodes/reorder", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify([
-          {
-            id: sourceNode.id,
-            sort_order: sourceNode.sort_order,
-            grid_x: -1,
-            grid_y: -1,
-            width: 1,
-            height: 1,
-            parent_id: null,
-          },
-        ]),
-      });
+      await this.pinNodeToDock(sourceNode);
       return;
     }
 
     const targetNode = targetId ? this.nodes.find((n) => n.id === targetId) : undefined;
 
-    // Case 2: Dropped onto a node inside the Dock (-1, -1) -> dock & reorder
     if (
       targetNode &&
       !targetNode.parent_id &&
@@ -1382,7 +2278,6 @@ class DashboardStore {
       return;
     }
 
-    // Case 3: Both nodes are inside the same container -> reorder children
     if (
       targetNode &&
       sourceNode.parent_id &&
@@ -1420,7 +2315,6 @@ class DashboardStore {
       return;
     }
 
-    // Case 4: Dragging an action node onto a child inside a container
     if (targetNode && sourceNode.node_type === "action" && targetNode.parent_id) {
       this.clearDragPreview();
       const siblings = this.getChildren(targetNode.parent_id);
@@ -1461,13 +2355,11 @@ class DashboardStore {
       return;
     }
 
-    // Case 5: Commit active Elastic Grid Reflow preview
     if (this.dropPreview && Object.keys(this.previewPositions).length > 0) {
       await this.commitPreviewLayout();
       return;
     }
 
-    // Case 6: Fallback if dropped directly onto a cell:x:y or root targetNode
     if (targetId.startsWith("cell:")) {
       const parts = targetId.split(":");
       this.updateDragReflow(Number(parts[1]), Number(parts[2]));
@@ -1530,15 +2422,31 @@ class DashboardStore {
     if (this.workspaces.length <= 1) return;
 
     const prevWorkspaces = [...this.workspaces];
-    const prevNodes = [...this.nodes];
+    const prevNodes = structuredClone($state.snapshot(this.nodes));
     const deletedIdx = this.workspaces.findIndex((w) => w.id === id);
 
-    this.workspaces = this.workspaces.filter((w) => w.id !== id);
+    const remainingWorkspaces = this.workspaces.filter((w) => w.id !== id);
+    const fallbackWs = remainingWorkspaces[Math.max(0, deletedIdx - 1)] ?? remainingWorkspaces[0];
+
+    const dockIds = new Set(
+      this.nodes
+        .filter((n) => n.workspace_id === id && !n.parent_id && n.grid_x === -1 && n.grid_y === -1)
+        .map((n) => n.id),
+    );
+
+    for (const n of this.nodes) {
+      if (dockIds.has(n.id) || (n.parent_id && dockIds.has(n.parent_id))) {
+        n.workspace_id = fallbackWs.id;
+      }
+    }
+
+    this.workspaces = remainingWorkspaces;
     this.nodes = this.nodes.filter((n) => n.workspace_id !== id);
 
-    if (this.activeWorkspaceId === id && this.workspaces.length > 0) {
-      const fallbackIdx = Math.max(0, deletedIdx - 1);
-      this.selectWorkspace(this.workspaces[fallbackIdx].id);
+    if (this.activeWorkspaceId === id) {
+      this.selectWorkspace(fallbackWs.id);
+    } else {
+      this.springToPage(this.activeWorkspaceIndex);
     }
     this.persistSnapshot();
 
@@ -1549,12 +2457,14 @@ class DashboardStore {
     if (!res.ok) {
       this.workspaces = prevWorkspaces;
       this.nodes = prevNodes;
+      this.springToPage(this.activeWorkspaceIndex);
       this.persistSnapshot();
     }
   }
 
   openCreateNodeModal(parentId: string | null = null, gridX?: number, gridY?: number): void {
     this.closeContextMenu();
+    this.closeControlCenter();
     this.flippedNodeId = null;
     const coords =
       gridX !== undefined && gridY !== undefined
@@ -1577,6 +2487,7 @@ class DashboardStore {
         timezone: "Europe/Amsterdam",
         flag: "🇳🇱",
         clockFace: "analog",
+        sweepSeconds: true,
         placeholder: "Search the Web...",
         engineUrl: "https://www.google.com/search?q=",
         todos: [],
@@ -1589,6 +2500,7 @@ class DashboardStore {
     event?.stopPropagation();
     event?.preventDefault();
     this.closeContextMenu();
+    this.closeControlCenter();
     this.nodeModal = {
       open: true,
       mode: "edit",
@@ -1674,12 +2586,15 @@ class DashboardStore {
     const finalTitle = this.nodeModal.title.trim() || defaultTitleMap[this.nodeModal.node_type];
 
     if (this.nodeModal.mode === "create") {
-      const siblings = this.nodes.filter(
-        (n) =>
-          n.workspace_id === this.activeWorkspace!.id &&
-          n.parent_id === this.nodeModal.parent_id &&
-          (finalX === -1 ? n.grid_x === -1 : n.grid_x > 0),
-      );
+      const siblings =
+        finalX === -1
+          ? this.dockNodes
+          : this.nodes.filter(
+              (n) =>
+                n.workspace_id === this.activeWorkspace!.id &&
+                n.parent_id === this.nodeModal.parent_id &&
+                n.grid_x > 0,
+            );
 
       const nowIso = new Date().toISOString();
       const optimisticNode: DashboardNode = {
@@ -1757,7 +2672,10 @@ class DashboardStore {
 
     const prevNodes = [...this.nodes];
     this.nodes = this.nodes.filter((n) => n.id !== id && n.parent_id !== id);
-    if (this.openFolderId === id) this.openFolderId = null;
+    if (this.openFolderId === id) {
+      this.openFolderId = null;
+      this.isFolderClosing = false;
+    }
     if (this.flippedNodeId === id) this.flippedNodeId = null;
     this.persistSnapshot();
 

@@ -1,16 +1,19 @@
 package api
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"io/fs"
 	"mime"
 	"net/http"
 	"net/url"
 	"path"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -26,10 +29,60 @@ import (
 // Max base64 string length for a 100KB binary image (~137KB + data URI header).
 const maxCustomIconLength = 150_000
 
+var (
+	ogSiteNameRe = regexp.MustCompile(`(?is)<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)["']`)
+	ogSiteRevRe  = regexp.MustCompile(`(?is)<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:site_name["']`)
+	titleTagRe   = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
+)
+
 type cachedIcon struct {
 	data        []byte
 	contentType string
 	etag        string
+}
+
+type urlMetaResponse struct {
+	Title        string `json:"title"`
+	Domain       string `json:"domain"`
+	IconURL      string `json:"icon_url"`
+	CanonicalURL string `json:"canonical_url"`
+}
+
+// Zero-dependency singleflight group to coalesce concurrent upstream icon/meta fetches.
+type inflightCall struct {
+	wg  sync.WaitGroup
+	val any
+	err error
+}
+
+type singleflightGroup struct {
+	mu    sync.Mutex
+	calls map[string]*inflightCall
+}
+
+func (g *singleflightGroup) Do(key string, fn func() (any, error)) (any, error) {
+	g.mu.Lock()
+	if g.calls == nil {
+		g.calls = make(map[string]*inflightCall)
+	}
+	if c, ok := g.calls[key]; ok {
+		g.mu.Unlock()
+		c.wg.Wait()
+		return c.val, c.err
+	}
+	c := new(inflightCall)
+	c.wg.Add(1)
+	g.calls[key] = c
+	g.mu.Unlock()
+
+	c.val, c.err = fn()
+	c.wg.Done()
+
+	g.mu.Lock()
+	delete(g.calls, key)
+	g.mu.Unlock()
+
+	return c.val, c.err
 }
 
 type Server struct {
@@ -39,6 +92,8 @@ type Server struct {
 	frontendFS fs.FS
 	httpClient *http.Client
 	iconCache  sync.Map // map[string]cachedIcon
+	metaCache  sync.Map // map[string]urlMetaResponse
+	sf         singleflightGroup
 }
 
 func NewRouter(db *gorm.DB, engine *state.Engine, cipher *crypto.EnvelopeCipher, frontendFS fs.FS) http.Handler {
@@ -48,7 +103,7 @@ func NewRouter(db *gorm.DB, engine *state.Engine, cipher *crypto.EnvelopeCipher,
 		cipher:     cipher,
 		frontendFS: frontendFS,
 		httpClient: &http.Client{
-			Timeout: 4 * time.Second,
+			Timeout: 3500 * time.Millisecond,
 		},
 	}
 
@@ -58,6 +113,7 @@ func NewRouter(db *gorm.DB, engine *state.Engine, cipher *crypto.EnvelopeCipher,
 	mux.HandleFunc("GET /api/v1/bootstrap", s.handleBootstrap)
 	mux.HandleFunc("GET /api/v1/live", s.handleLiveSSE)
 	mux.HandleFunc("GET /api/v1/icons/{domain}", s.handleGetDomainIcon)
+	mux.HandleFunc("GET /api/v1/meta", s.handleGetURLMetadata)
 
 	// 2. Workspace Management Endpoints
 	mux.HandleFunc("GET /api/v1/workspaces", s.handleListWorkspaces)
@@ -122,6 +178,10 @@ func (s *Server) handleLiveSSE(w http.ResponseWriter, r *http.Request) {
 	defer unsubscribe()
 
 	_, _ = fmt.Fprintf(w, ": connected\n\n")
+	// Immediately hydrate the client with all current volatile signals
+	for _, delta := range s.engine.CurrentSignalDeltas() {
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", delta)
+	}
 	flusher.Flush()
 
 	for {
@@ -138,8 +198,7 @@ func (s *Server) handleLiveSSE(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleGetDomainIcon proxies and caches 128px app icons in RAM so the client
-// renders squircle icons in <50µs with immutable browser caching.
+// handleGetDomainIcon resolves, coalesces, and caches high-res Apple Touch Icons / 128px favicons in RAM.
 func (s *Server) handleGetDomainIcon(w http.ResponseWriter, r *http.Request) {
 	domain := strings.ToLower(strings.TrimSpace(r.PathValue("domain")))
 	if domain == "" || strings.Contains(domain, "/") {
@@ -148,67 +207,235 @@ func (s *Server) handleGetDomainIcon(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if val, ok := s.iconCache.Load(domain); ok {
-		entry := val.(cachedIcon)
-		if inm := r.Header.Get("If-None-Match"); inm != "" && inm == entry.etag {
-			w.Header().Set("ETag", entry.etag)
-			w.WriteHeader(http.StatusNotModified)
-			return
-		}
-		w.Header().Set("Content-Type", entry.contentType)
-		w.Header().Set("ETag", entry.etag)
-		w.Header().Set("Cache-Control", "public, max-age=604800, immutable")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(entry.data)
+		serveCachedIcon(w, r, val.(cachedIcon))
 		return
 	}
 
-	upstreamURL := fmt.Sprintf(
-		"https://www.google.com/s2/favicons?domain=%s&sz=128",
-		url.QueryEscape(domain),
-	)
+	res, err := s.sf.Do("icon:"+domain, func() (any, error) {
+		if val, ok := s.iconCache.Load(domain); ok {
+			return val.(cachedIcon), nil
+		}
 
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, upstreamURL, nil)
+		entry, err := s.fetchBestDomainIcon(r.Context(), domain)
+		if err != nil {
+			return cachedIcon{}, err
+		}
+		s.iconCache.Store(domain, entry)
+		return entry, nil
+	})
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
 
-	resp, err := s.httpClient.Do(req)
-	if err != nil || resp.StatusCode != http.StatusOK {
-		if resp != nil {
-			_ = resp.Body.Close()
-		}
-		http.NotFound(w, r)
+	serveCachedIcon(w, r, res.(cachedIcon))
+}
+
+func serveCachedIcon(w http.ResponseWriter, r *http.Request, entry cachedIcon) {
+	if inm := r.Header.Get("If-None-Match"); inm != "" && inm == entry.etag {
+		w.Header().Set("ETag", entry.etag)
+		w.WriteHeader(http.StatusNotModified)
 		return
 	}
-	defer resp.Body.Close()
-
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
-	if err != nil || len(data) == 0 {
-		http.NotFound(w, r)
-		return
-	}
-
-	contentType := resp.Header.Get("Content-Type")
-	if contentType == "" {
-		contentType = http.DetectContentType(data)
-	}
-
-	sum := sha256.Sum256(data)
-	etag := fmt.Sprintf(`"%s"`, hex.EncodeToString(sum[:12]))
-
-	entry := cachedIcon{
-		data:        data,
-		contentType: contentType,
-		etag:        etag,
-	}
-	s.iconCache.Store(domain, entry)
-
-	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("ETag", etag)
+	w.Header().Set("Content-Type", entry.contentType)
+	w.Header().Set("ETag", entry.etag)
 	w.Header().Set("Cache-Control", "public, max-age=604800, immutable")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(data)
+	_, _ = w.Write(entry.data)
+}
+
+func (s *Server) fetchBestDomainIcon(ctx context.Context, domain string) (cachedIcon, error) {
+	candidates := []string{
+		fmt.Sprintf("https://%s/apple-touch-icon.png", domain),
+		fmt.Sprintf("https://www.google.com/s2/favicons?domain=%s&sz=128", url.QueryEscape(domain)),
+	}
+
+	for _, candidateURL := range candidates {
+		reqCtx, cancel := context.WithTimeout(ctx, 1800*time.Millisecond)
+		req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, candidateURL, nil)
+		if err != nil {
+			cancel()
+			continue
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) AppleWebKit/605.1.15")
+
+		resp, err := s.httpClient.Do(req)
+		if err != nil || resp.StatusCode != http.StatusOK {
+			if resp != nil {
+				_ = resp.Body.Close()
+			}
+			cancel()
+			continue
+		}
+
+		data, readErr := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+		_ = resp.Body.Close()
+		cancel()
+
+		if readErr != nil || len(data) < 64 {
+			continue
+		}
+
+		contentType := resp.Header.Get("Content-Type")
+		if contentType == "" || strings.HasPrefix(contentType, "text/plain") {
+			contentType = http.DetectContentType(data)
+		}
+		if !strings.HasPrefix(contentType, "image/") {
+			continue
+		}
+
+		sum := sha256.Sum256(data)
+		etag := fmt.Sprintf(`"%s"`, hex.EncodeToString(sum[:12]))
+		return cachedIcon{
+			data:        data,
+			contentType: contentType,
+			etag:        etag,
+		}, nil
+	}
+
+	return cachedIcon{}, fmt.Errorf("no valid icon found for %s", domain)
+}
+
+// handleGetURLMetadata resolves the clean app title and icon URL with singleflight deduplication.
+func (s *Server) handleGetURLMetadata(w http.ResponseWriter, r *http.Request) {
+	rawURL := strings.TrimSpace(r.URL.Query().Get("url"))
+	if rawURL == "" {
+		http.Error(w, "missing url parameter", http.StatusBadRequest)
+		return
+	}
+	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
+		rawURL = "https://" + rawURL
+	}
+
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Hostname() == "" {
+		http.Error(w, "invalid url", http.StatusBadRequest)
+		return
+	}
+
+	domain := strings.ToLower(parsed.Hostname())
+	cacheKey := parsed.String()
+
+	if cached, ok := s.metaCache.Load(cacheKey); ok {
+		writeJSON(w, http.StatusOK, cached)
+		return
+	}
+
+	res, _ := s.sf.Do("meta:"+cacheKey, func() (any, error) {
+		if cached, ok := s.metaCache.Load(cacheKey); ok {
+			return cached, nil
+		}
+
+		result := urlMetaResponse{
+			Title:        humanizeDomainTitle(domain),
+			Domain:       domain,
+			IconURL:      "/api/v1/icons/" + url.PathEscape(domain),
+			CanonicalURL: parsed.String(),
+		}
+
+		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, parsed.String(), nil)
+		if err == nil {
+			req.Header.Set("User-Agent", "Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1")
+			req.Header.Set("Accept", "text/html,application/xhtml+xml")
+
+			if resp, err := s.httpClient.Do(req); err == nil {
+				defer resp.Body.Close()
+				if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+					bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+					if extracted := extractCleanPageTitle(string(bodyBytes)); extracted != "" {
+						result.Title = extracted
+					}
+				}
+			}
+		}
+
+		s.metaCache.Store(cacheKey, result)
+		return result, nil
+	})
+
+	writeJSON(w, http.StatusOK, res)
+}
+
+func extractCleanPageTitle(htmlHead string) string {
+	if m := ogSiteNameRe.FindStringSubmatch(htmlHead); len(m) > 1 {
+		if t := cleanExtractedTitle(m[1]); t != "" {
+			return t
+		}
+	}
+	if m := ogSiteRevRe.FindStringSubmatch(htmlHead); len(m) > 1 {
+		if t := cleanExtractedTitle(m[1]); t != "" {
+			return t
+		}
+	}
+	if m := titleTagRe.FindStringSubmatch(htmlHead); len(m) > 1 {
+		if t := cleanExtractedTitle(m[1]); t != "" {
+			return t
+		}
+	}
+	return ""
+}
+
+func cleanExtractedTitle(raw string) string {
+	unescaped := strings.TrimSpace(html.UnescapeString(raw))
+	unescaped = strings.Join(strings.Fields(unescaped), " ")
+
+	for _, sep := range []string{" · ", " — ", " – ", " | ", " - ", " : "} {
+		if idx := strings.Index(unescaped, sep); idx > 1 {
+			unescaped = strings.TrimSpace(unescaped[:idx])
+			break
+		}
+	}
+
+	lower := strings.ToLower(unescaped)
+	if lower == "just a moment..." || lower == "attention required!" || lower == "access denied" {
+		return ""
+	}
+	if len(unescaped) > 32 {
+		unescaped = strings.TrimSpace(unescaped[:32])
+	}
+	return unescaped
+}
+
+func humanizeDomainTitle(domain string) string {
+	d := strings.TrimPrefix(domain, "www.")
+	known := map[string]string{
+		"github.com":           "GitHub",
+		"gitlab.com":           "GitLab",
+		"youtube.com":          "YouTube",
+		"news.ycombinator.com": "Hacker News",
+		"reddit.com":           "Reddit",
+		"x.com":                "X",
+		"twitter.com":          "Twitter",
+		"chatgpt.com":          "ChatGPT",
+		"claude.ai":            "Claude",
+		"mail.google.com":      "Gmail",
+		"calendar.google.com":  "Google Calendar",
+		"drive.google.com":     "Google Drive",
+		"open.spotify.com":     "Spotify",
+		"spotify.com":          "Spotify",
+		"netflix.com":          "Netflix",
+		"twitch.tv":            "Twitch",
+		"discord.com":          "Discord",
+		"notion.so":            "Notion",
+		"figma.com":            "Figma",
+		"linear.app":           "Linear",
+		"vercel.com":           "Vercel",
+		"cloudflare.com":       "Cloudflare",
+		"stackoverflow.com":    "Stack Overflow",
+		"developer.apple.com":  "Apple Developer",
+	}
+	if val, ok := known[d]; ok {
+		return val
+	}
+	parts := strings.Split(d, ".")
+	base := parts[0]
+	if len(parts) >= 3 && (parts[0] == "app" || parts[0] == "my" || parts[0] == "dash") {
+		base = parts[1]
+	}
+	if base == "" {
+		return domain
+	}
+	return strings.ToUpper(base[:1]) + base[1:]
 }
 
 func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
@@ -253,7 +480,26 @@ func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.db.WithContext(r.Context()).Delete(&models.Workspace{}, "id = ?", id).Error; err != nil {
+	err = s.db.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		var fallback models.Workspace
+		if err := tx.Where("id <> ?", id).Order("created_at ASC").First(&fallback).Error; err == nil {
+			var dockIDs []uuid.UUID
+			_ = tx.Model(&models.Node{}).
+				Where("workspace_id = ? AND parent_id IS NULL AND grid_x = -1 AND grid_y = -1", id).
+				Pluck("id", &dockIDs).Error
+
+			if len(dockIDs) > 0 {
+				if err := tx.Model(&models.Node{}).
+					Where("id IN ? OR parent_id IN ?", dockIDs, dockIDs).
+					Update("workspace_id", fallback.ID).Error; err != nil {
+					return err
+				}
+			}
+		}
+
+		return tx.Delete(&models.Workspace{}, "id = ?", id).Error
+	})
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

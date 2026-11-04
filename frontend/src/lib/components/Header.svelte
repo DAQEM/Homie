@@ -1,5 +1,12 @@
 <script lang="ts">
-    import { Check, Plus, Search, Sparkles, Wifi } from "@lucide/svelte";
+    import {
+        Check,
+        Plus,
+        Search,
+        SlidersHorizontal,
+        Sparkles,
+        Wifi,
+    } from "@lucide/svelte";
     import { dashboard } from "../state/dashboard.svelte";
 
     let timeText = $derived(
@@ -18,23 +25,19 @@
         }).format(dashboard.now),
     );
 
-    let liveUptime = $derived(
-        typeof dashboard.signals["system:hello:uptime"] === "string"
-            ? (dashboard.signals["system:hello:uptime"] as string)
-            : null,
-    );
+    let isLiveSSE = $derived(dashboard.hydrationStatus.includes("Live"));
 </script>
 
 <header
-    class="w-full flex items-center justify-between px-2 py-1 select-none text-xs font-semibold text-white/90"
+    class="w-full flex items-center justify-between px-2 py-1 select-none text-xs font-semibold text-white/92"
 >
     <!-- Top-Left: iPadOS Time, Date & Contextual Edit Mode '+' Pill -->
     <div class="flex items-center gap-3">
         <div
-            class="flex items-center gap-2 ios-tabular-nums tracking-tight ios-label-shadow"
+            class="flex items-center gap-2 ios-tabular-nums tracking-tight ios-vibrant-label"
         >
             <span>{timeText}</span>
-            <span class="text-white/70 font-medium">{dateText}</span>
+            <span class="ios-vibrant-secondary font-medium">{dateText}</span>
         </div>
 
         {#if dashboard.isEditMode}
@@ -50,42 +53,23 @@
         {/if}
     </div>
 
-    <!-- Center: Subtle Active Workspace Indicator -->
+    <!-- Center: Subtle Vibrant Active Workspace Indicator -->
     {#if dashboard.activeWorkspace}
         <div
-            class="hidden sm:flex items-center gap-1.5 text-[11px] font-medium text-white/55 ios-label-shadow"
+            class="hidden sm:flex items-center gap-1.5 text-[11px] font-medium ios-vibrant-secondary"
         >
             <span>{dashboard.activeWorkspace.name}</span>
         </div>
     {/if}
 
-    <!-- Top-Right: Spotlight Trigger, Live SSE Signal Status & Edit/Done Pill -->
+    <!-- Top-Right: Spotlight Trigger, Edit Mode & iPadOS Control Center Capsule -->
     <div class="flex items-center gap-2">
         {#if !dashboard.isEditMode}
-            <div
-                title={liveUptime
-                    ? `${dashboard.hydrationStatus} • ${liveUptime}`
-                    : dashboard.hydrationStatus}
-                class="hidden sm:flex items-center gap-1.5 text-[11px] font-medium text-white/75 ios-tabular-nums ios-label-shadow mr-1"
-            >
-                <span
-                    class="size-1.5 rounded-full {dashboard.hydrationStatus.includes(
-                        'Live',
-                    )
-                        ? 'bg-[#30D158] shadow-[0_0_6px_#30D158]'
-                        : 'bg-[#0A84FF]'}"
-                ></span>
-                {#if liveUptime}
-                    <span class="text-white/55">{liveUptime}</span>
-                {/if}
-                <Wifi class="size-3.5 text-white/80 ml-0.5" />
-            </div>
-
             <button
                 type="button"
                 onclick={() => dashboard.openSpotlight()}
                 title="Spotlight Search (⌘K)"
-                class="ios-glass-pill rounded-full px-2.5 py-1 text-[11px] font-medium text-white/80 hover:text-white hover:bg-white/15 active:scale-95 transition-all flex items-center gap-1.5 cursor-pointer"
+                class="ios-glass-pill rounded-full px-2.5 py-1 text-[11px] font-medium text-white/85 hover:text-white hover:bg-white/15 active:scale-95 transition-all flex items-center gap-1.5 cursor-pointer"
             >
                 <Search class="size-3 text-white/75" />
                 <span class="hidden sm:inline">Search</span>
@@ -95,10 +79,29 @@
                 type="button"
                 onclick={() => dashboard.toggleEditMode()}
                 title="Edit Home Screen (⌘E)"
-                class="ios-glass-pill rounded-full px-2.5 py-1 text-[11px] font-medium text-white/75 hover:text-white hover:bg-white/15 active:scale-95 transition-all flex items-center gap-1 cursor-pointer"
+                class="ios-glass-pill rounded-full px-2.5 py-1 text-[11px] font-medium text-white/80 hover:text-white hover:bg-white/15 active:scale-95 transition-all flex items-center gap-1 cursor-pointer"
             >
                 <Sparkles class="size-3 text-primary" />
-                <span>Edit</span>
+                <span class="hidden sm:inline">Edit</span>
+            </button>
+
+            <!-- iPadOS Control Center Status Capsule -->
+            <button
+                type="button"
+                onclick={() => dashboard.toggleControlCenter()}
+                title="Control Center"
+                aria-label="Open Control Center"
+                class="ios-glass-pill rounded-full px-2.5 py-1 text-[11px] font-medium text-white/90 hover:text-white hover:bg-white/18 active:scale-95 transition-all flex items-center gap-2 cursor-pointer {dashboard.isControlCenterOpen
+                    ? 'ring-1.5 ring-white/50 bg-white/20'
+                    : ''}"
+            >
+                <span
+                    class="size-1.5 rounded-full {isLiveSSE
+                        ? 'bg-[#30D158] shadow-[0_0_6px_#30D158]'
+                        : 'bg-[#0A84FF]'}"
+                ></span>
+                <Wifi class="size-3.5 text-white/85" />
+                <SlidersHorizontal class="size-3 text-white/75" />
             </button>
         {:else}
             <button

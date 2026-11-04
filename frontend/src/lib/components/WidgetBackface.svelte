@@ -1,13 +1,52 @@
 <script lang="ts">
     import { Check, RotateCcw } from "@lucide/svelte";
     import { dashboard, WIDGET_SIZE_PRESETS } from "../state/dashboard.svelte";
-    import type { DashboardNode, NodeSettings } from "../types";
+    import type { DashboardNode, NodeSettings, WorldClockCity } from "../types";
 
     interface Props {
         node: DashboardNode;
     }
 
     let { node }: Props = $props();
+
+    const DEFAULT_QUAD_CITIES: WorldClockCity[] = [
+        {
+            name: node.title || "Amsterdam",
+            timezone: node.settings?.timezone || "Europe/Amsterdam",
+            flag: node.settings?.flag || "🇳🇱",
+        },
+        { name: "Cupertino", timezone: "America/Los_Angeles", flag: "🇺🇸" },
+        { name: "New York", timezone: "America/New_York", flag: "🇺🇸" },
+        { name: "Tokyo", timezone: "Asia/Tokyo", flag: "🇯🇵" },
+    ];
+
+    const POPULAR_TIMEZONES = [
+        "Europe/Amsterdam",
+        "Europe/London",
+        "Europe/Paris",
+        "Europe/Berlin",
+        "Europe/Madrid",
+        "Europe/Rome",
+        "Europe/Zurich",
+        "Europe/Stockholm",
+        "America/New_York",
+        "America/Chicago",
+        "America/Denver",
+        "America/Los_Angeles",
+        "America/Toronto",
+        "America/Vancouver",
+        "America/Sao_Paulo",
+        "Asia/Tokyo",
+        "Asia/Seoul",
+        "Asia/Singapore",
+        "Asia/Hong_Kong",
+        "Asia/Shanghai",
+        "Asia/Kolkata",
+        "Asia/Dubai",
+        "Australia/Sydney",
+        "Pacific/Auckland",
+        "UTC",
+    ];
 
     let title = $state(node.title);
     let selectedW = $state(node.width || 2);
@@ -18,10 +57,25 @@
 
     let sizePresets = $derived(WIDGET_SIZE_PRESETS[node.node_type] ?? []);
     let isCompact = $derived((node.height || 1) === 1);
+    let isQuadClock = $derived(
+        node.node_type === "clock" && selectedW >= 4 && selectedH >= 4,
+    );
+
+    $effect(() => {
+        if (isQuadClock && (!settings.cities || settings.cities.length < 4)) {
+            settings.cities = structuredClone(DEFAULT_QUAD_CITIES);
+        }
+    });
 
     async function handleSave(e: SubmitEvent) {
         e.preventDefault();
         e.stopPropagation();
+        if (isQuadClock && settings.cities && settings.cities.length > 0) {
+            title = settings.cities[0].name.trim() || title;
+            settings.timezone =
+                settings.cities[0].timezone.trim() || settings.timezone;
+            settings.flag = settings.cities[0].flag;
+        }
         await dashboard.saveFlippedWidget(node.id, {
             title,
             width: selectedW,
@@ -35,6 +89,12 @@
         dashboard.flippedNodeId = null;
     }
 </script>
+
+<datalist id="iana-timezones-list">
+    {#each POPULAR_TIMEZONES as tz (tz)}
+        <option value={tz}></option>
+    {/each}
+</datalist>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
@@ -92,7 +152,9 @@
             <span
                 class="text-xs font-bold tracking-tight text-white/90 truncate"
             >
-                Configure {node.node_type.toUpperCase()}
+                {isQuadClock
+                    ? "Configure 4-City World Clock"
+                    : `Configure ${node.node_type.toUpperCase()}`}
             </span>
             <div class="flex items-center gap-1.5">
                 <button
@@ -113,49 +175,153 @@
             </div>
         </div>
 
-        <div class="space-y-2 my-auto text-xs">
-            <label class="block space-y-1">
-                <span class="text-[10px] font-medium text-white/55 block">
-                    Title
-                </span>
-                <input
-                    type="text"
-                    required
-                    bind:value={title}
-                    class="w-full ios-input px-2.5 py-1 text-xs text-white"
-                />
-            </label>
-
-            {#if node.node_type === "clock"}
-                <div class="grid grid-cols-3 gap-1.5">
-                    <label class="col-span-2 block space-y-1">
-                        <span
-                            class="text-[10px] font-medium text-white/55 block"
+        <div class="space-y-2 my-auto text-xs overflow-y-auto pr-0.5">
+            {#if isQuadClock && settings.cities}
+                <!-- 4-City World Clock Grid Configuration (for 4x4 Large Clock) -->
+                <div class="grid grid-cols-2 gap-2">
+                    {#each settings.cities.slice(0, 4) as city, idx (idx)}
+                        <div
+                            class="ios-nested-surface p-2.5 rounded-xl space-y-1.5"
                         >
-                            IANA Timezone
-                        </span>
-                        <input
-                            type="text"
-                            required
-                            bind:value={settings.timezone}
-                            placeholder="America/New_York"
-                            class="w-full ios-input px-2 py-1 text-[11px] text-white"
-                        />
-                    </label>
-                    <label class="block space-y-1">
-                        <span
-                            class="text-[10px] font-medium text-white/55 block"
-                        >
-                            Flag
-                        </span>
-                        <input
-                            type="text"
-                            bind:value={settings.flag}
-                            placeholder="🇺🇸"
-                            class="w-full ios-input px-2 py-1 text-[11px] text-white text-center"
-                        />
-                    </label>
+                            <div
+                                class="flex items-center justify-between gap-1.5"
+                            >
+                                <span
+                                    class="text-[10px] font-bold uppercase tracking-wider text-primary"
+                                >
+                                    Clock {idx + 1}
+                                </span>
+                                <input
+                                    type="text"
+                                    bind:value={city.flag}
+                                    placeholder="🌍"
+                                    title="Flag Emoji"
+                                    class="w-9 ios-input px-1 py-0.5 text-[11px] text-center"
+                                />
+                            </div>
+                            <input
+                                type="text"
+                                required
+                                bind:value={city.name}
+                                placeholder="City name"
+                                class="w-full ios-input px-2 py-1 text-[11px] text-white font-medium"
+                            />
+                            <input
+                                type="text"
+                                required
+                                list="iana-timezones-list"
+                                bind:value={city.timezone}
+                                placeholder="Europe/Amsterdam"
+                                class="w-full ios-input px-2 py-1 text-[10.5px] text-white/85 font-mono"
+                            />
+                        </div>
+                    {/each}
                 </div>
+
+                <div class="flex items-center justify-between pt-1">
+                    <span class="text-[10px] font-medium text-white/55">
+                        Second Hand Motion
+                    </span>
+                    <div
+                        class="flex items-center gap-1 p-0.5 rounded-full bg-black/30 border border-white/8"
+                    >
+                        <button
+                            type="button"
+                            onclick={() => (settings.sweepSeconds = true)}
+                            class="px-2.5 py-0.5 rounded-full text-[10px] font-semibold cursor-pointer {settings.sweepSeconds !==
+                            false
+                                ? 'bg-white text-black'
+                                : 'text-white/60 hover:text-white'}"
+                        >
+                            Sweep
+                        </button>
+                        <button
+                            type="button"
+                            onclick={() => (settings.sweepSeconds = false)}
+                            class="px-2.5 py-0.5 rounded-full text-[10px] font-semibold cursor-pointer {settings.sweepSeconds ===
+                            false
+                                ? 'bg-white text-black'
+                                : 'text-white/60 hover:text-white'}"
+                        >
+                            Quartz
+                        </button>
+                    </div>
+                </div>
+            {:else}
+                <label class="block space-y-1">
+                    <span class="text-[10px] font-medium text-white/55 block">
+                        Title
+                    </span>
+                    <input
+                        type="text"
+                        required
+                        bind:value={title}
+                        class="w-full ios-input px-2.5 py-1 text-xs text-white"
+                    />
+                </label>
+
+                {#if node.node_type === "clock"}
+                    <div class="grid grid-cols-3 gap-1.5">
+                        <label class="col-span-2 block space-y-1">
+                            <span
+                                class="text-[10px] font-medium text-white/55 block"
+                            >
+                                IANA Timezone
+                            </span>
+                            <input
+                                type="text"
+                                required
+                                list="iana-timezones-list"
+                                bind:value={settings.timezone}
+                                placeholder="Europe/Amsterdam"
+                                class="w-full ios-input px-2 py-1 text-[11px] text-white"
+                            />
+                        </label>
+                        <label class="block space-y-1">
+                            <span
+                                class="text-[10px] font-medium text-white/55 block"
+                            >
+                                Flag
+                            </span>
+                            <input
+                                type="text"
+                                bind:value={settings.flag}
+                                placeholder="🇳🇱"
+                                class="w-full ios-input px-2 py-1 text-[11px] text-white text-center"
+                            />
+                        </label>
+                    </div>
+
+                    <div class="flex items-center justify-between pt-0.5">
+                        <span class="text-[10px] font-medium text-white/55">
+                            Second Hand
+                        </span>
+                        <div
+                            class="flex items-center gap-1 p-0.5 rounded-full bg-black/30 border border-white/8"
+                        >
+                            <button
+                                type="button"
+                                onclick={() => (settings.sweepSeconds = true)}
+                                class="px-2 py-0.5 rounded-full text-[10px] font-semibold cursor-pointer {settings.sweepSeconds !==
+                                false
+                                    ? 'bg-white text-black'
+                                    : 'text-white/60 hover:text-white'}"
+                            >
+                                Sweep
+                            </button>
+                            <button
+                                type="button"
+                                onclick={() => (settings.sweepSeconds = false)}
+                                class="px-2 py-0.5 rounded-full text-[10px] font-semibold cursor-pointer {settings.sweepSeconds ===
+                                false
+                                    ? 'bg-white text-black'
+                                    : 'text-white/60 hover:text-white'}"
+                            >
+                                Quartz
+                            </button>
+                        </div>
+                    </div>
+                {/if}
             {/if}
         </div>
 

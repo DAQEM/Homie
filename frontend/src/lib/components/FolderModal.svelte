@@ -18,15 +18,23 @@
         }
     });
 
-    // Compute origin translation vector from the clicked folder's center to viewport center
+    // Compute exact origin translation and scale vectors from the source folder squircle
     let morphStyle = $derived.by(() => {
         const origin = dashboard.openFolderOrigin;
         if (!origin || typeof window === "undefined") {
-            return "--folder-dx: 0px; --folder-dy: 0px;";
+            return "--folder-dx: 0px; --folder-dy: 0px; --folder-sx: 0.16; --folder-sy: 0.16;";
         }
         const dx = Math.round(origin.cx - window.innerWidth / 2);
         const dy = Math.round(origin.cy - window.innerHeight / 2);
-        return `--folder-dx: ${dx}px; --folder-dy: ${dy}px;`;
+        const sx = Math.max(
+            0.12,
+            Math.min(0.4, (origin.width || 62) / 420),
+        ).toFixed(3);
+        const sy = Math.max(
+            0.12,
+            Math.min(0.4, (origin.height || 62) / 340),
+        ).toFixed(3);
+        return `--folder-dx: ${dx}px; --folder-dy: ${dy}px; --folder-sx: ${sx}; --folder-sy: ${sy};`;
     });
 
     function clearOutsideDragTimer() {
@@ -38,13 +46,13 @@
 
     function handleBackdropClick(e: MouseEvent) {
         if (e.target === e.currentTarget) {
-            dashboard.openFolderId = null;
+            dashboard.closeFolder();
         }
     }
 
     function handleKeydown(e: KeyboardEvent) {
         if (e.key === "Escape") {
-            dashboard.openFolderId = null;
+            dashboard.closeFolder();
         }
     }
 
@@ -103,12 +111,16 @@
         onkeydown={handleKeydown}
         onpointermove={handleFolderPointerMove}
         onpointerup={clearOutsideDragTimer}
-        class="fixed inset-0 z-50 bg-black/35 backdrop-blur-xl flex flex-col items-center justify-center p-4 select-none"
+        class="fixed inset-0 z-50 bg-black/35 backdrop-blur-xl flex flex-col items-center justify-center p-4 select-none transition-opacity duration-250 {dashboard.isFolderClosing
+            ? 'opacity-0 pointer-events-none'
+            : 'opacity-100'}"
     >
-        <!-- Origin-Anchored Morphing Folder Container -->
+        <!-- Bi-Directional Origin-Anchored Morphing Folder Platter -->
         <div
             style={morphStyle}
-            class="w-full max-w-[420px] flex flex-col items-center gap-4 ios-folder-morph"
+            class="w-full max-w-[420px] flex flex-col items-center gap-4 {dashboard.isFolderClosing
+                ? 'ios-folder-morph-closing'
+                : 'ios-folder-morph'}"
         >
             <!-- Inline Editable iPadOS Folder Header -->
             <input
