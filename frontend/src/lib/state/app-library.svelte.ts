@@ -5,7 +5,7 @@ import {
   type DashboardNode,
 } from "../types";
 import { APP_USAGE_STORAGE_KEY, CATEGORY_LABELS } from "./constants";
-import { session } from "./session.svelte";
+import { apiFetch, session } from "./session.svelte";
 
 export class AppLibraryController {
   appUsageMap = $state<Record<string, number>>({});
@@ -67,6 +67,11 @@ export class AppLibraryController {
   );
 
   constructor() {
+    this.reloadFromLocal();
+  }
+
+  reloadFromLocal(): void {
+    this.appUsageMap = {};
     const usageRaw = localStorage.getItem(APP_USAGE_STORAGE_KEY);
     if (usageRaw) {
       try {
@@ -105,7 +110,7 @@ export class AppLibraryController {
     if (this.syncTimer) clearTimeout(this.syncTimer);
     this.syncTimer = setTimeout(() => {
       this.syncTimer = null;
-      void fetch("/api/v1/preferences/app_usage", {
+      void apiFetch("/api/v1/preferences/app_usage", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(this.appUsageMap),

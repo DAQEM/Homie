@@ -1,6 +1,7 @@
 import type { DashboardNode } from "../types";
 import { GRID_COLS, GRID_ROWS, RESPONSIVE_MAX_ROWS, type GridRect } from "./constants";
 import { canFitRectAmong, clampToGrid, findClosestSlotAmong, rectsOverlap } from "./grid-math";
+import { apiFetch } from "./session.svelte";
 
 /**
  * Computes non-overlapping 2D grid positions when `activeNodeId` is dragged or resized
@@ -153,7 +154,7 @@ export async function executeNodeMerge(
     ctx.activeStackIndices[targetNode.id] = existingChildren.length + 1;
     ctx.persistSnapshot();
 
-    void fetch("/api/v1/nodes/reorder", {
+    void apiFetch("/api/v1/nodes/reorder", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify([
@@ -184,7 +185,7 @@ export async function executeNodeMerge(
     sourceNode.sort_order = existingChildren.length + 1;
     ctx.persistSnapshot();
 
-    void fetch("/api/v1/nodes/reorder", {
+    void apiFetch("/api/v1/nodes/reorder", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify([
@@ -241,14 +242,14 @@ export async function executeNodeMerge(
 
     ctx.persistSnapshot();
 
-    const res = await fetch("/api/v1/nodes", {
+    const res = await apiFetch("/api/v1/nodes", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(createdFolder),
     });
 
     if (res.ok) {
-      void fetch("/api/v1/nodes/reorder", {
+      void apiFetch("/api/v1/nodes/reorder", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify([

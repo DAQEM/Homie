@@ -1,16 +1,22 @@
 import type { CalendarEvent, CalendarSyncStatus, DashboardNode } from "../types";
-import type { SessionStore } from "./session.svelte";
+import { apiFetch, type SessionStore } from "./session.svelte";
 
 export class CalendarController {
   private session: SessionStore;
   syncingCalendarNodes = $state<Record<string, boolean>>({});
   loadingRangeKeys = $state<Record<string, boolean>>({});
-  // Ephemeral in-memory cache for historical/future dates outside the SSE sliding window
   private rangeEventsByNode = $state<Record<string, Record<string, CalendarEvent>>>({});
   private loadedRanges = new Set<string>();
 
   constructor(session: SessionStore) {
     this.session = session;
+  }
+
+  reset(): void {
+    this.syncingCalendarNodes = {};
+    this.loadingRangeKeys = {};
+    this.rangeEventsByNode = {};
+    this.loadedRanges.clear();
   }
 
   getCalendarEventsForNode(node: DashboardNode): CalendarEvent[] {
@@ -56,9 +62,6 @@ export class CalendarController {
     return null;
   }
 
-  /**
-   * Fetches events on-demand when CalendarModal browses beyond the compact SSE sliding window.
-   */
   async ensureMonthRangeLoaded(nodeId: string, year: number, monthIndex: number): Promise<void> {
     if (!nodeId || nodeId === "gallery-preview-node") return;
 
@@ -85,7 +88,7 @@ export class CalendarController {
 
     this.loadingRangeKeys[cacheKey] = true;
     try {
-      const res = await fetch(
+      const res = await apiFetch(
         `/api/v1/nodes/${nodeId}/calendar-events?start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}`,
       );
       if (res.ok) {
@@ -108,7 +111,6 @@ export class CalendarController {
     if (this.syncingCalendarNodes[nodeId]) return;
     this.syncingCalendarNodes[nodeId] = true;
     try {
-      // Clear cached out-of-window ranges so fresh feed data shows everywhere
       for (const key of Array.from(this.loadedRanges)) {
         if (key.startsWith(`${nodeId}:`)) {
           this.loadedRanges.delete(key);
@@ -116,7 +118,7 @@ export class CalendarController {
       }
       delete this.rangeEventsByNode[nodeId];
 
-      const res = await fetch(`/api/v1/nodes/${nodeId}/calendar-sync`, {
+      const res = await apiFetch(`/api/v1/nodes/${nodeId}/calendar-sync`, {
         method: "POST",
       });
       if (res.ok) {

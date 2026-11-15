@@ -48,8 +48,10 @@ export class SessionStore {
   private pagingRef: PagingController | null = null;
   private onPreferencesLoadedCb: ((prefs: Record<string, unknown>) => void) | null = null;
   private isInteractionBusyFn: (() => boolean) | null = null;
+  private onUnauthorizedCb: (() => void) | null = null;
   private bootstrapRefreshInFlight = false;
   private pendingBootstrapSync = false;
+  private activeSSE: EventSource | null = null;
 
   activeGridCols = $derived<number>(getGridColsForWidth(this.viewportWidth));
 
@@ -66,7 +68,6 @@ export class SessionStore {
 
   rootNodes = $derived<DashboardNode[]>(this.getWorkspaceRootNodes(this.activeWorkspace?.id ?? ""));
 
-  // Computed responsive coordinates across all workspace pages (so horizontal swipe transitions match)
   responsiveRootRects = $derived.by<Record<string, GridRect>>(() => {
     const merged: Record<string, GridRect> = {};
     for (const ws of this.workspaces) {
@@ -102,7 +103,17 @@ export class SessionStore {
     this.dockNodes.filter((n) => n.node_type === "container"),
   );
 
-  constructor() {
+  setUnauthorizedHandler(cb: () => void): void {
+    this.onUnauthorizedCb = cb;
+  }
+
+  notifyUnauthorized(): void {
+    this.stopLiveSync();
+    this.onUnauthorizedCb?.();
+  }
+
+  hydrateFromLocalStorage(): void {
+    this.currentETag = localStorage.getItem(ETAG_KEY);
     const cachedRaw = localStorage.getItem(STORAGE_KEY);
     if (cachedRaw) {
       try {
@@ -126,9 +137,25 @@ export class SessionStore {
     } else if (this.workspaces.length > 0) {
       this.activeWorkspaceId = this.workspaces[0].id;
     }
+
+    if (Object.keys(this.preferences).length > 0) {
+      this.onPreferencesLoadedCb?.(this.preferences);
+    }
   }
 
-  init(
+  resetBoardState(): void {
+    this.stopLiveSync();
+    this.workspaces = [];
+    this.nodes = [];
+    this.preferences = {};
+    this.signals = {};
+    this.activeWorkspaceId = null;
+    this.isEditMode = false;
+    this.currentETag = null;
+    this.hydrationStatus = "Signed Out";
+  }
+
+  initEnvironmentListeners(
     paging: PagingController,
     onPreferencesLoaded?: (prefs: Record<string, unknown>) => void,
     isInteractionBusy?: () => boolean,
@@ -136,10 +163,6 @@ export class SessionStore {
     this.pagingRef = paging;
     this.onPreferencesLoadedCb = onPreferencesLoaded ?? null;
     this.isInteractionBusyFn = isInteractionBusy ?? null;
-
-    if (Object.keys(this.preferences).length > 0) {
-      this.onPreferencesLoadedCb?.(this.preferences);
-    }
 
     let clockTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -180,15 +203,40 @@ export class SessionStore {
       window.addEventListener("resize", handleResize, { passive: true });
     }
 
+    return () => {
+      stopClock();
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", handleVisibilityChange);
+      }
+      if (typeof window !== "undefined") {
+        window.removeEventListener("resize", handleResize);
+      }
+      paging.stopPageSpring();
+      this.stopLiveSync();
+    };
+  }
+
+  startLiveSync(): void {
+    this.hydrateFromLocalStorage();
     void this.refreshBootstrap(false);
+
+    if (this.activeSSE) {
+      this.activeSSE.close();
+      this.activeSSE = null;
+    }
 
     const sse = new EventSource("/api/v1/live");
     sse.onmessage = (event: MessageEvent<string>) => {
       const delta = JSON.parse(event.data) as SignalDelta;
+
+      if (delta.key === "auth:revoked") {
+        this.notifyUnauthorized();
+        return;
+      }
+
       this.signals[delta.key] = delta.value;
       this.hydrationStatus = "Phase 2: Live SSE";
 
-      // Real-time multi-tab / multi-device structural sync
       if (
         delta.key === "system:snapshot:etag" &&
         typeof delta.value === "string" &&
@@ -201,18 +249,14 @@ export class SessionStore {
         }
       }
     };
+    this.activeSSE = sse;
+  }
 
-    return () => {
-      stopClock();
-      if (typeof document !== "undefined") {
-        document.removeEventListener("visibilitychange", handleVisibilityChange);
-      }
-      if (typeof window !== "undefined") {
-        window.removeEventListener("resize", handleResize);
-      }
-      paging.stopPageSpring();
-      sse.close();
-    };
+  stopLiveSync(): void {
+    if (this.activeSSE) {
+      this.activeSSE.close();
+      this.activeSSE = null;
+    }
   }
 
   flushPendingSync(): void {
@@ -230,6 +274,10 @@ export class SessionStore {
       const res = await fetch("/api/v1/bootstrap", {
         headers: etag ? { "If-None-Match": etag } : {},
       });
+      if (res.status === 401) {
+        this.notifyUnauthorized();
+        return;
+      }
       if (res.status === 304) {
         this.hydrationStatus = "Phase 1: 304 Not Modified";
         return;
@@ -252,9 +300,8 @@ export class SessionStore {
 
       this.onPreferencesLoadedCb?.(this.preferences);
 
-      // Keep this tab's current workspace if it still exists; only resolve from storage on initial boot or deletion
       if (this.activeWorkspaceId && this.workspaces.some((w) => w.id === this.activeWorkspaceId)) {
-        // Preserve current workspace selection
+        // Keep current workspace
       } else {
         const storedWs = readStoredWorkspaceId();
         if (storedWs && this.workspaces.some((w) => w.id === storedWs)) {
@@ -410,3 +457,11 @@ export class SessionStore {
 }
 
 export const session = new SessionStore();
+
+export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const res = await fetch(input, init);
+  if (res.status === 401) {
+    session.notifyUnauthorized();
+  }
+  return res;
+}

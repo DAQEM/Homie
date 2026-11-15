@@ -6,6 +6,7 @@
         EyeOff,
         Layers,
         LayoutGrid,
+        LogOut,
         Palette,
         Plus,
         RefreshCw,
@@ -57,6 +58,18 @@
     let connectedVikunjaAccounts = $derived(
         dashboard.vikunja.accounts.filter((a) => a.connected),
     );
+
+    let userInitials = $derived.by(() => {
+        const name =
+            dashboard.auth.user?.displayName ||
+            dashboard.auth.user?.username ||
+            "U";
+        return name
+            .split(/\s+/)
+            .slice(0, 2)
+            .map((p) => p[0]?.toUpperCase() ?? "")
+            .join("");
+    });
 </script>
 
 {#if dashboard.isControlCenterOpen}
@@ -73,6 +86,50 @@
             onclick={(e) => e.stopPropagation()}
             class="fixed top-11 right-4 z-50 w-[332px] ios-modal-surface rounded-[30px] p-4 space-y-3 text-white shadow-2xl ios-quick-action-menu"
         >
+            <!-- OIDC User Account Pod (when OIDC is enabled) -->
+            {#if dashboard.auth.oidcEnabled && dashboard.auth.user}
+                <div
+                    class="ios-cc-module p-3 flex items-center justify-between gap-2.5"
+                >
+                    <div class="flex items-center gap-2.5 min-w-0">
+                        {#if dashboard.auth.user.avatarUrl}
+                            <img
+                                src={dashboard.auth.user.avatarUrl}
+                                alt={dashboard.auth.user.displayName}
+                                class="size-9 rounded-full object-cover border border-white/20 shrink-0"
+                            />
+                        {:else}
+                            <div
+                                class="size-9 rounded-full bg-primary/30 border border-primary/50 text-white text-xs font-bold flex items-center justify-center shrink-0"
+                            >
+                                {userInitials}
+                            </div>
+                        {/if}
+                        <div class="min-w-0">
+                            <div class="text-xs font-semibold truncate">
+                                {dashboard.auth.user.displayName ||
+                                    dashboard.auth.user.username}
+                            </div>
+                            <div class="text-[10px] text-white/50 truncate">
+                                {dashboard.auth.user.email ||
+                                    `@${dashboard.auth.user.username}`}
+                            </div>
+                        </div>
+                    </div>
+
+                    <button
+                        type="button"
+                        disabled={dashboard.auth.isLoggingOut}
+                        onclick={() => void dashboard.auth.logout()}
+                        title="Sign out"
+                        class="px-2.5 py-1.5 rounded-full bg-white/10 hover:bg-destructive/25 text-white/85 hover:text-destructive text-[11px] font-semibold flex items-center gap-1 transition-colors shrink-0 cursor-pointer disabled:opacity-50"
+                    >
+                        <LogOut class="size-3" />
+                        <span>Sign Out</span>
+                    </button>
+                </div>
+            {/if}
+
             <!-- Top Row: Connectivity Pod + 2x2 Quick Actions Grid -->
             <div class="grid grid-cols-2 gap-3">
                 <!-- Left 1x1 Pod: Go Signal Bus & Hydration Telemetry -->

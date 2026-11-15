@@ -18,10 +18,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// Max .ics payload size (8 MB) to guard against runaway feeds.
 const maxICSBytes = 8 * 1024 * 1024
 
-// CalendarFeedConfig represents a user-configured .ics / webcal:// feed on a Calendar node.
 type CalendarFeedConfig struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
@@ -36,7 +34,6 @@ type calendarNodeSettings struct {
 	CalendarFeeds []CalendarFeedConfig `json:"calendarFeeds"`
 }
 
-// FeedSyncResult reports the health of a single .ics feed.
 type FeedSyncResult struct {
 	ID    string `json:"id"`
 	Name  string `json:"name"`
@@ -45,7 +42,6 @@ type FeedSyncResult struct {
 	Count int    `json:"count"`
 }
 
-// CalendarSyncStatus is emitted to `calendar:status:<nodeID>` over SSE.
 type CalendarSyncStatus struct {
 	LastSyncedAt string           `json:"lastSyncedAt"`
 	TotalEvents  int              `json:"totalEvents"`
@@ -59,13 +55,16 @@ type cachedICSFeed struct {
 	fetchedAt    time.Time
 }
 
-// CalendarProvider polls .ics feeds configured on calendar nodes and emits a compact
-// sliding window over SSE while serving arbitrary historical/future ranges on demand.
+type ownedCalendarNode struct {
+	models.Node
+	UserID uuid.UUID `gorm:"column:user_id"`
+}
+
 type CalendarProvider struct {
 	db         *gorm.DB
 	engine     *state.Engine
 	httpClient *http.Client
-	feedCache  sync.Map // map[string]cachedICSFeed
+	feedCache  sync.Map
 	triggerCh  chan struct{}
 }
 
@@ -98,7 +97,6 @@ func (p *CalendarProvider) Initialize(ctx context.Context) error {
 	return nil
 }
 
-// TriggerSync schedules an immediate non-blocking poll of all calendar nodes.
 func (p *CalendarProvider) TriggerSync() {
 	select {
 	case p.triggerCh <- struct{}{}:
@@ -106,27 +104,34 @@ func (p *CalendarProvider) TriggerSync() {
 	}
 }
 
-// SyncNodeNow forces an immediate refresh (bypassing HTTP cache) for a single calendar node.
-func (p *CalendarProvider) SyncNodeNow(ctx context.Context, nodeID uuid.UUID) (*CalendarSyncStatus, error) {
-	var node models.Node
-	if err := p.db.WithContext(ctx).First(&node, "id = ? AND node_type = ?", nodeID, "calendar").Error; err != nil {
+func (p *CalendarProvider) SyncNodeNow(ctx context.Context, userID, nodeID uuid.UUID) (*CalendarSyncStatus, error) {
+	var row ownedCalendarNode
+	if err := p.db.WithContext(ctx).
+		Table("nodes").
+		Select("nodes.*, workspaces.user_id").
+		Joins("JOIN workspaces ON workspaces.id = nodes.workspace_id").
+		Where("nodes.id = ? AND nodes.node_type = ? AND workspaces.user_id = ?", nodeID, "calendar", userID).
+		First(&row).Error; err != nil {
 		return nil, err
 	}
-	status := p.syncSingleNode(ctx, node, p.engine, true)
+	status := p.syncSingleNode(ctx, row.Node, row.UserID, p.engine, true)
 	return &status, nil
 }
 
-// QueryNodeEvents returns parsed events for an arbitrary [start, end] date range on demand
-// without bloating the persistent SSE / localStorage sliding window.
-func (p *CalendarProvider) QueryNodeEvents(ctx context.Context, nodeID uuid.UUID, start, end time.Time) ([]SyncedCalendarEvent, error) {
-	var node models.Node
-	if err := p.db.WithContext(ctx).First(&node, "id = ? AND node_type = ?", nodeID, "calendar").Error; err != nil {
+func (p *CalendarProvider) QueryNodeEvents(ctx context.Context, userID, nodeID uuid.UUID, start, end time.Time) ([]SyncedCalendarEvent, error) {
+	var row ownedCalendarNode
+	if err := p.db.WithContext(ctx).
+		Table("nodes").
+		Select("nodes.*, workspaces.user_id").
+		Joins("JOIN workspaces ON workspaces.id = nodes.workspace_id").
+		Where("nodes.id = ? AND nodes.node_type = ? AND workspaces.user_id = ?", nodeID, "calendar", userID).
+		First(&row).Error; err != nil {
 		return nil, err
 	}
 
 	var cfg calendarNodeSettings
-	if len(node.Settings) > 0 {
-		_ = json.Unmarshal(node.Settings, &cfg)
+	if len(row.Settings) > 0 {
+		_ = json.Unmarshal(row.Settings, &cfg)
 	}
 
 	feeds := extractConfiguredFeeds(cfg)
@@ -190,18 +195,23 @@ func (p *CalendarProvider) QueryNodeEvents(ctx context.Context, nodeID uuid.UUID
 }
 
 func (p *CalendarProvider) Poll(ctx context.Context, emitter SignalEmitter) error {
-	var calendarNodes []models.Node
-	if err := p.db.WithContext(ctx).Where("node_type = ?", "calendar").Find(&calendarNodes).Error; err != nil {
+	var rows []ownedCalendarNode
+	if err := p.db.WithContext(ctx).
+		Table("nodes").
+		Select("nodes.*, workspaces.user_id").
+		Joins("JOIN workspaces ON workspaces.id = nodes.workspace_id").
+		Where("nodes.node_type = ?", "calendar").
+		Scan(&rows).Error; err != nil {
 		return fmt.Errorf("failed querying calendar nodes: %w", err)
 	}
 
 	var wg sync.WaitGroup
-	for _, node := range calendarNodes {
+	for _, row := range rows {
 		wg.Add(1)
-		go func(n models.Node) {
+		go func(r ownedCalendarNode) {
 			defer wg.Done()
-			p.syncSingleNode(ctx, n, emitter, false)
-		}(node)
+			p.syncSingleNode(ctx, r.Node, r.UserID, emitter, false)
+		}(row)
 	}
 	wg.Wait()
 
@@ -215,6 +225,7 @@ func (p *CalendarProvider) Teardown(_ context.Context) error {
 func (p *CalendarProvider) syncSingleNode(
 	ctx context.Context,
 	node models.Node,
+	userID uuid.UUID,
 	emitter SignalEmitter,
 	forceBypassCache bool,
 ) CalendarSyncStatus {
@@ -232,8 +243,8 @@ func (p *CalendarProvider) syncSingleNode(
 			TotalEvents:  0,
 			Feeds:        []FeedSyncResult{},
 		}
-		emitter.EmitSignal(ctx, "calendar:events:"+nodeIDStr, []SyncedCalendarEvent{})
-		emitter.EmitSignal(ctx, "calendar:status:"+nodeIDStr, emptyStatus)
+		emitter.EmitUserSignal(ctx, userID, "calendar:events:"+nodeIDStr, []SyncedCalendarEvent{})
+		emitter.EmitUserSignal(ctx, userID, "calendar:status:"+nodeIDStr, emptyStatus)
 		return emptyStatus
 	}
 
@@ -244,8 +255,6 @@ func (p *CalendarProvider) syncSingleNode(
 	displayLoc := resolveTimezone(tzName, time.Local)
 
 	now := time.Now().In(displayLoc)
-	// Compact SSE sliding window (-30 days through +120 days) keeps SSE & localStorage lean;
-	// older/future ranges are fetched on-demand via GET /api/v1/nodes/{id}/calendar-events.
 	windowStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, displayLoc).AddDate(0, 0, -30)
 	windowEnd := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 0, displayLoc).AddDate(0, 0, 120)
 
@@ -320,8 +329,8 @@ func (p *CalendarProvider) syncSingleNode(
 		Feeds:        feedResults,
 	}
 
-	emitter.EmitSignal(ctx, "calendar:events:"+nodeIDStr, allEvents)
-	emitter.EmitSignal(ctx, "calendar:status:"+nodeIDStr, status)
+	emitter.EmitUserSignal(ctx, userID, "calendar:events:"+nodeIDStr, allEvents)
+	emitter.EmitUserSignal(ctx, userID, "calendar:status:"+nodeIDStr, status)
 
 	return status
 }

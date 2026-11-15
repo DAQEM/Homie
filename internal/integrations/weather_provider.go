@@ -15,18 +15,19 @@ import (
 	"homie/internal/models"
 	"homie/internal/state"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
 type WeatherHourlyPoint struct {
-	Time        string  `json:"time"` // HH:MM
+	Time        string  `json:"time"`
 	Temperature float64 `json:"temperature"`
 	Code        int     `json:"code"`
 	IsDay       bool    `json:"isDay"`
 }
 
 type WeatherDailyPoint struct {
-	Date    string  `json:"date"` // YYYY-MM-DD
+	Date    string  `json:"date"`
 	Code    int     `json:"code"`
 	TempMax float64 `json:"tempMax"`
 	TempMin float64 `json:"tempMin"`
@@ -34,7 +35,7 @@ type WeatherDailyPoint struct {
 
 type WeatherSignal struct {
 	Location    string               `json:"location"`
-	Unit        string               `json:"unit"` // "C" | "F"
+	Unit        string               `json:"unit"`
 	Temperature float64              `json:"temperature"`
 	FeelsLike   float64              `json:"feelsLike"`
 	Humidity    int                  `json:"humidity"`
@@ -61,12 +62,16 @@ type geoCoords struct {
 	Longitude float64
 }
 
-// WeatherProvider polls Open-Meteo (zero API key required) for all `weather` widgets.
+type ownedWeatherNode struct {
+	models.Node
+	UserID uuid.UUID `gorm:"column:user_id"`
+}
+
 type WeatherProvider struct {
 	db         *gorm.DB
 	engine     *state.Engine
 	httpClient *http.Client
-	geoCache   sync.Map // map[string]geoCoords
+	geoCache   sync.Map
 	triggerCh  chan struct{}
 }
 
@@ -111,24 +116,29 @@ func (p *WeatherProvider) Teardown(_ context.Context) error {
 }
 
 func (p *WeatherProvider) Poll(ctx context.Context, emitter SignalEmitter) error {
-	var weatherNodes []models.Node
-	if err := p.db.WithContext(ctx).Where("node_type = ?", "weather").Find(&weatherNodes).Error; err != nil {
+	var rows []ownedWeatherNode
+	if err := p.db.WithContext(ctx).
+		Table("nodes").
+		Select("nodes.*, workspaces.user_id").
+		Joins("JOIN workspaces ON workspaces.id = nodes.workspace_id").
+		Where("nodes.node_type = ?", "weather").
+		Scan(&rows).Error; err != nil {
 		return err
 	}
 
 	var wg sync.WaitGroup
-	for _, node := range weatherNodes {
+	for _, row := range rows {
 		wg.Add(1)
-		go func(n models.Node) {
+		go func(r ownedWeatherNode) {
 			defer wg.Done()
-			p.syncSingleNode(ctx, n, emitter)
-		}(node)
+			p.syncSingleNode(ctx, r.Node, r.UserID, emitter)
+		}(row)
 	}
 	wg.Wait()
 	return nil
 }
 
-func (p *WeatherProvider) syncSingleNode(ctx context.Context, node models.Node, emitter SignalEmitter) {
+func (p *WeatherProvider) syncSingleNode(ctx context.Context, node models.Node, userID uuid.UUID, emitter SignalEmitter) {
 	var cfg weatherNodeSettings
 	if len(node.Settings) > 0 {
 		_ = json.Unmarshal(node.Settings, &cfg)
@@ -150,7 +160,7 @@ func (p *WeatherProvider) syncSingleNode(ctx context.Context, node models.Node, 
 	coords, err := p.geocodeCity(ctx, location)
 	if err != nil {
 		slog.Warn("Weather geocoding failed", "location", location, "error", err)
-		emitter.EmitSignal(ctx, "weather:"+node.ID.String(), WeatherSignal{
+		emitter.EmitUserSignal(ctx, userID, "weather:"+node.ID.String(), WeatherSignal{
 			Location:  location,
 			Unit:      unit,
 			Condition: "Unavailable",
@@ -163,7 +173,7 @@ func (p *WeatherProvider) syncSingleNode(ctx context.Context, node models.Node, 
 	forecast, err := p.fetchForecast(ctx, coords, unit)
 	if err != nil {
 		slog.Warn("Weather forecast failed", "location", location, "error", err)
-		emitter.EmitSignal(ctx, "weather:"+node.ID.String(), WeatherSignal{
+		emitter.EmitUserSignal(ctx, userID, "weather:"+node.ID.String(), WeatherSignal{
 			Location:  coords.Name,
 			Unit:      unit,
 			Condition: "Unavailable",
@@ -173,7 +183,7 @@ func (p *WeatherProvider) syncSingleNode(ctx context.Context, node models.Node, 
 		return
 	}
 
-	emitter.EmitSignal(ctx, "weather:"+node.ID.String(), forecast)
+	emitter.EmitUserSignal(ctx, userID, "weather:"+node.ID.String(), forecast)
 }
 
 func (p *WeatherProvider) geocodeCity(ctx context.Context, query string) (geoCoords, error) {

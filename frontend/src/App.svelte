@@ -1,8 +1,9 @@
 <script lang="ts">
     import { DragDropProvider } from "@dnd-kit/svelte";
-    import { Plus } from "@lucide/svelte";
+    import { Loader2, Plus } from "@lucide/svelte";
     import { dashboard } from "./lib/state/dashboard.svelte";
     import AmbientWallpaper from "./lib/components/ui/AmbientWallpaper.svelte";
+    import LoginScreen from "./lib/components/LoginScreen.svelte";
     import Header from "./lib/components/Header.svelte";
     import GridCell from "./lib/components/GridCell.svelte";
     import SortableNode from "./lib/components/SortableNode.svelte";
@@ -259,6 +260,8 @@
     }
 
     function handleGlobalKeydown(e: KeyboardEvent) {
+        if (!dashboard.auth.authenticated) return;
+
         if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
             e.preventDefault();
             dashboard.toggleSpotlight();
@@ -363,6 +366,7 @@
 
     function handleHorizontalWheel(e: WheelEvent) {
         if (
+            !dashboard.auth.authenticated ||
             dashboard.isSpotlightOpen ||
             dashboard.openCalendarNodeId ||
             dashboard.openVikunjaTaskId !== null ||
@@ -388,6 +392,8 @@
     }
 
     function handlePointerMove(e: PointerEvent) {
+        if (!dashboard.auth.authenticated) return;
+
         if (wallpaperLongPressTimer) {
             const dist = Math.hypot(
                 e.clientX - wallpaperDownPos.x,
@@ -605,134 +611,155 @@
 
 <AmbientWallpaper />
 
-<!-- svelte-ignore a11y_click_events_have_key_events -->
-<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<main
-    data-wallpaper-surface="true"
-    onpointerdown={handleBackgroundPointerDown}
-    onclick={handleBackgroundClick}
-    ondblclick={handleBackgroundDblClick}
-    class="relative min-h-screen pt-2 pb-36 space-y-4 overflow-x-hidden transform-gpu will-change-[transform,opacity] transition-[transform,opacity] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] {isFullModalRecessed
-        ? 'scale-[0.958] opacity-55 pointer-events-none'
-        : isQuickActionRecessed
-          ? 'scale-[0.974] opacity-68 pointer-events-none'
-          : ''}"
->
-    <section class="max-w-[1520px] mx-auto px-4">
-        <Header />
-    </section>
-
-    {#if dashboard.workspaces.length === 0}
-        <section class="max-w-md mx-auto mt-20 px-4 text-center select-none">
-            <div class="ios-modal-surface rounded-[30px] p-8 space-y-4">
-                <h2 class="text-xl font-semibold text-white ios-tight-tracking">
-                    Welcome to Homie
-                </h2>
-                <p class="text-xs text-white/60 leading-relaxed">
-                    Create your first Home Screen page to start pinning apps,
-                    widgets, calendars, and Vikunja tasks.
-                </p>
-                <button
-                    type="button"
-                    onclick={() => (dashboard.isWorkspaceModalOpen = true)}
-                    class="inline-flex items-center gap-1.5 rounded-full bg-primary text-white px-4 py-2 text-xs font-semibold shadow-md hover:brightness-110 active:scale-95 transition-all cursor-pointer"
-                >
-                    <Plus class="size-3.5 stroke-[2.5]" />
-                    <span>Create Home Screen</span>
-                </button>
-            </div>
-        </section>
-    {/if}
-
-    <DragDropProvider
-        onDragStart={dashboard.handleDragStart}
-        onDragOver={dashboard.handleDragOver}
-        onDragEnd={dashboard.handleDragEnd}
-    >
-        <!-- Continuous Horizontal Spatial Viewport -->
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
+{#if dashboard.auth.isLoading}
+    <div class="min-h-screen flex items-center justify-center select-none">
         <div
-            data-wallpaper-surface="true"
-            ontouchstart={handleViewportTouchStart}
-            ontouchmove={handleViewportTouchMove}
-            ontouchend={handleViewportTouchEnd}
-            ontouchcancel={handleViewportTouchEnd}
-            class="relative w-full overflow-x-clip touch-pan-y"
+            class="ios-glass-pill rounded-full px-4 py-2 flex items-center gap-2 text-xs font-medium text-white/80"
         >
+            <Loader2 class="size-3.5 animate-spin text-primary" />
+            <span>Loading session…</span>
+        </div>
+    </div>
+{:else if !dashboard.auth.authenticated}
+    <LoginScreen />
+{:else}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <main
+        data-wallpaper-surface="true"
+        onpointerdown={handleBackgroundPointerDown}
+        onclick={handleBackgroundClick}
+        ondblclick={handleBackgroundDblClick}
+        class="relative min-h-screen pt-2 pb-36 space-y-4 overflow-x-hidden transform-gpu will-change-[transform,opacity] transition-[transform,opacity] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] {isFullModalRecessed
+            ? 'scale-[0.958] opacity-55 pointer-events-none'
+            : isQuickActionRecessed
+              ? 'scale-[0.974] opacity-68 pointer-events-none'
+              : ''}"
+    >
+        <section class="max-w-[1520px] mx-auto px-4">
+            <Header />
+        </section>
+
+        {#if dashboard.workspaces.length === 0}
+            <section
+                class="max-w-md mx-auto mt-20 px-4 text-center select-none"
+            >
+                <div class="ios-modal-surface rounded-[30px] p-8 space-y-4">
+                    <h2
+                        class="text-xl font-semibold text-white ios-tight-tracking"
+                    >
+                        Welcome to Homie
+                    </h2>
+                    <p class="text-xs text-white/60 leading-relaxed">
+                        Create your first Home Screen page to start pinning
+                        apps, widgets, calendars, and Vikunja tasks.
+                    </p>
+                    <button
+                        type="button"
+                        onclick={() => (dashboard.isWorkspaceModalOpen = true)}
+                        class="inline-flex items-center gap-1.5 rounded-full bg-primary text-white px-4 py-2 text-xs font-semibold shadow-md hover:brightness-110 active:scale-95 transition-all cursor-pointer"
+                    >
+                        <Plus class="size-3.5 stroke-[2.5]" />
+                        <span>Create Home Screen</span>
+                    </button>
+                </div>
+            </section>
+        {/if}
+
+        <DragDropProvider
+            onDragStart={dashboard.handleDragStart}
+            onDragOver={dashboard.handleDragOver}
+            onDragEnd={dashboard.handleDragEnd}
+        >
+            <!-- Continuous Horizontal Spatial Viewport -->
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
                 data-wallpaper-surface="true"
-                style="transform: translate3d(calc({-dashboard.pagePosition} * 100%), 0, 0);"
-                class="flex w-full will-change-transform"
+                ontouchstart={handleViewportTouchStart}
+                ontouchmove={handleViewportTouchMove}
+                ontouchend={handleViewportTouchEnd}
+                ontouchcancel={handleViewportTouchEnd}
+                class="relative w-full overflow-x-clip touch-pan-y"
             >
-                {#each dashboard.workspaces as ws, pageIdx (ws.id)}
-                    {@const isActivePage =
-                        ws.id === dashboard.activeWorkspace?.id}
-                    {@const isNearViewport =
-                        Math.abs(dashboard.pagePosition - pageIdx) <= 1.05}
-                    {@const pageNodes = dashboard.getWorkspaceRootNodes(ws.id)}
+                <div
+                    data-wallpaper-surface="true"
+                    style="transform: translate3d(calc({-dashboard.pagePosition} * 100%), 0, 0);"
+                    class="flex w-full will-change-transform"
+                >
+                    {#each dashboard.workspaces as ws, pageIdx (ws.id)}
+                        {@const isActivePage =
+                            ws.id === dashboard.activeWorkspace?.id}
+                        {@const isNearViewport =
+                            Math.abs(dashboard.pagePosition - pageIdx) <= 1.05}
+                        {@const pageNodes = dashboard.getWorkspaceRootNodes(
+                            ws.id,
+                        )}
 
-                    <div
-                        data-wallpaper-surface="true"
-                        class="w-full shrink-0 px-4 {isNearViewport
-                            ? ''
-                            : 'invisible pointer-events-none'}"
-                    >
-                        <section
-                            bind:this={gridSectionEls[ws.id]}
+                        <div
                             data-wallpaper-surface="true"
-                            style="grid-template-columns: repeat({dashboard.activeGridCols}, minmax(0, 1fr));"
-                            class="relative grid auto-rows-[100px] gap-4 max-w-[1520px] mx-auto"
+                            class="w-full shrink-0 px-4 {isNearViewport
+                                ? ''
+                                : 'invisible pointer-events-none'}"
                         >
-                            {#if isActivePage}
-                                {#each cells as cell (`${cell.x}:${cell.y}`)}
-                                    <GridCell
-                                        x={cell.x}
-                                        y={cell.y}
-                                        occupied={cell.occupied}
-                                    />
-                                {/each}
+                            <section
+                                bind:this={gridSectionEls[ws.id]}
+                                data-wallpaper-surface="true"
+                                style="grid-template-columns: repeat({dashboard.activeGridCols}, minmax(0, 1fr));"
+                                class="relative grid auto-rows-[100px] gap-4 max-w-[1520px] mx-auto"
+                            >
+                                {#if isActivePage}
+                                    {#each cells as cell (`${cell.x}:${cell.y}`)}
+                                        <GridCell
+                                            x={cell.x}
+                                            y={cell.y}
+                                            occupied={cell.occupied}
+                                        />
+                                    {/each}
 
-                                {#if dashboard.isEditMode && dashboard.dropPreview}
+                                    {#if dashboard.isEditMode && dashboard.dropPreview}
+                                        <div
+                                            style="grid-column: {dashboard
+                                                .dropPreview
+                                                .x} / span {dashboard
+                                                .dropPreview
+                                                .w}; grid-row: {dashboard
+                                                .dropPreview
+                                                .y} / span {dashboard
+                                                .dropPreview.h};"
+                                            class="block pointer-events-none z-0 ios-drop-ghost"
+                                        ></div>
+                                    {/if}
+                                {:else}
                                     <div
-                                        style="grid-column: {dashboard
-                                            .dropPreview.x} / span {dashboard
-                                            .dropPreview
-                                            .w}; grid-row: {dashboard
-                                            .dropPreview.y} / span {dashboard
-                                            .dropPreview.h};"
-                                        class="block pointer-events-none z-0 ios-drop-ghost"
+                                        aria-hidden="true"
+                                        style="grid-column: 1 / -1; grid-row: 1 / span {dashboard.activeGridRows};"
+                                        class="pointer-events-none"
                                     ></div>
                                 {/if}
-                            {:else}
-                                <div
-                                    aria-hidden="true"
-                                    style="grid-column: 1 / -1; grid-row: 1 / span {dashboard.activeGridRows};"
-                                    class="pointer-events-none"
-                                ></div>
-                            {/if}
 
-                            {#each pageNodes as node (node.id)}
-                                <SortableNode {node}>
-                                    <NodeRenderer {node} />
-                                </SortableNode>
-                            {/each}
-                        </section>
-                    </div>
-                {/each}
+                                {#each pageNodes as node (node.id)}
+                                    <SortableNode {node}>
+                                        <NodeRenderer {node} />
+                                    </SortableNode>
+                                {/each}
+                            </section>
+                        </div>
+                    {/each}
+                </div>
             </div>
-        </div>
 
-        <PageDots />
-        <Dock />
-    </DragDropProvider>
-</main>
+            <PageDots />
+            <Dock />
+        </DragDropProvider>
+    </main>
 
-<ControlCenterPopover />
-<SpotlightModal />
-<ContextMenu />
-<FolderModal />
-<CalendarModal />
-<VikunjaTaskModal />
-<AppLibraryModal />
-<NodeFormModal />
-<WorkspaceModal />
+    <ControlCenterPopover />
+    <SpotlightModal />
+    <ContextMenu />
+    <FolderModal />
+    <CalendarModal />
+    <VikunjaTaskModal />
+    <AppLibraryModal />
+    <NodeFormModal />
+    <WorkspaceModal />
+{/if}

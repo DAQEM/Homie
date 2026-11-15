@@ -20,6 +20,7 @@
         MAX_ICON_BYTES,
         WIDGET_SIZE_PRESETS,
     } from "../state/dashboard.svelte";
+    import { apiFetch } from "../state/session.svelte";
     import {
         getNodeBrandGradient,
         getNodeIconSrc,
@@ -356,7 +357,7 @@
         metaDebounceTimer = setTimeout(async () => {
             isFetchingMeta = true;
             try {
-                const res = await fetch(
+                const res = await apiFetch(
                     `/api/v1/meta?url=${encodeURIComponent(targetHref)}`,
                 );
                 if (res.ok) {

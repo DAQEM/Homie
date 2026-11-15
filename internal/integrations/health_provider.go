@@ -12,12 +12,12 @@ import (
 	"homie/internal/models"
 	"homie/internal/state"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
-// NodeHealthSignal is emitted to `node:health:<nodeID>` over SSE for monitored action shortcuts.
 type NodeHealthSignal struct {
-	Status    string `json:"status"` // "up" | "degraded" | "down"
+	Status    string `json:"status"`
 	Code      int    `json:"code,omitempty"`
 	LatencyMs int64  `json:"latencyMs"`
 	CheckedAt string `json:"checkedAt"`
@@ -29,7 +29,11 @@ type actionHealthSettings struct {
 	HealthIgnoreTLS bool `json:"healthIgnoreTLS"`
 }
 
-// HealthCheckProvider periodically probes monitored action URLs and emits live status + latency.
+type ownedActionNode struct {
+	models.Node
+	UserID uuid.UUID `gorm:"column:user_id"`
+}
+
 type HealthCheckProvider struct {
 	db             *gorm.DB
 	engine         *state.Engine
@@ -85,32 +89,35 @@ func (p *HealthCheckProvider) Teardown(_ context.Context) error {
 }
 
 func (p *HealthCheckProvider) Poll(ctx context.Context, emitter SignalEmitter) error {
-	var actionNodes []models.Node
+	var rows []ownedActionNode
 	if err := p.db.WithContext(ctx).
-		Where("node_type = ? AND url IS NOT NULL AND url <> ''", "action").
-		Find(&actionNodes).Error; err != nil {
+		Table("nodes").
+		Select("nodes.*, workspaces.user_id").
+		Joins("JOIN workspaces ON workspaces.id = nodes.workspace_id").
+		Where("nodes.node_type = ? AND nodes.url IS NOT NULL AND nodes.url <> ''", "action").
+		Scan(&rows).Error; err != nil {
 		return err
 	}
 
 	sem := make(chan struct{}, 8)
 	var wg sync.WaitGroup
 
-	for _, node := range actionNodes {
+	for _, row := range rows {
 		var cfg actionHealthSettings
-		if len(node.Settings) > 0 {
-			_ = json.Unmarshal(node.Settings, &cfg)
+		if len(row.Settings) > 0 {
+			_ = json.Unmarshal(row.Settings, &cfg)
 		}
-		if !cfg.HealthCheck || node.URL == nil {
+		if !cfg.HealthCheck || row.URL == nil {
 			continue
 		}
 
-		targetURL := strings.TrimSpace(*node.URL)
+		targetURL := strings.TrimSpace(*row.URL)
 		if !strings.HasPrefix(targetURL, "http://") && !strings.HasPrefix(targetURL, "https://") {
 			continue
 		}
 
 		wg.Add(1)
-		go func(n models.Node, u string, ignoreTLS bool) {
+		go func(n models.Node, userID uuid.UUID, u string, ignoreTLS bool) {
 			defer wg.Done()
 			select {
 			case sem <- struct{}{}:
@@ -119,8 +126,8 @@ func (p *HealthCheckProvider) Poll(ctx context.Context, emitter SignalEmitter) e
 				return
 			}
 			sig := p.probeURL(ctx, u, ignoreTLS)
-			emitter.EmitSignal(ctx, "node:health:"+n.ID.String(), sig)
-		}(node, targetURL, cfg.HealthIgnoreTLS)
+			emitter.EmitUserSignal(ctx, userID, "node:health:"+n.ID.String(), sig)
+		}(row.Node, row.UserID, targetURL, cfg.HealthIgnoreTLS)
 	}
 
 	wg.Wait()
@@ -153,7 +160,6 @@ func (p *HealthCheckProvider) probeURL(ctx context.Context, targetURL string, ig
 	status := "down"
 	switch {
 	case (code >= 200 && code < 400) || code == http.StatusUnauthorized:
-		// 401 typically indicates a healthy homelab login gate (Authelia/Grafana/Proxmox)
 		status = "up"
 	case code >= 400 && code < 500:
 		status = "degraded"

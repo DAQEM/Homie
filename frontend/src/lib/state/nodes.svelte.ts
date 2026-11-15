@@ -11,7 +11,7 @@ import { GRID_COLS, GRID_ROWS, type ScreenBounds } from "./constants";
 import type { DragController } from "./drag-controller.svelte";
 import { clampToGrid } from "./grid-math";
 import type { OverlayController } from "./overlays.svelte";
-import type { SessionStore } from "./session.svelte";
+import { apiFetch, type SessionStore } from "./session.svelte";
 import type { VikunjaController } from "./vikunja.svelte";
 
 const DEFAULT_TITLE_MAP: Record<NodeType, string> = {
@@ -104,7 +104,7 @@ export class NodeController {
     this.drag.setDragGrabOffset(Math.floor(width / 2), Math.floor(height / 2));
     this.drag.promoteHoldToDirectDrag(optimisticNode.id, clientX, clientY, previewBounds);
 
-    void fetch("/api/v1/nodes", {
+    void apiFetch("/api/v1/nodes", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(optimisticNode),
@@ -129,7 +129,7 @@ export class NodeController {
       node.sort_order = free.y * 100 + free.x;
       this.session.persistSnapshot();
 
-      void fetch(`/api/v1/nodes/${node.id}`, {
+      void apiFetch(`/api/v1/nodes/${node.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -293,7 +293,7 @@ export class NodeController {
     this.overlays.flippedNodeId = null;
     this.session.persistSnapshot();
 
-    const res = await fetch(`/api/v1/nodes/${nodeId}`, {
+    const res = await apiFetch(`/api/v1/nodes/${nodeId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -317,7 +317,7 @@ export class NodeController {
     node.title = trimmed;
     this.session.persistSnapshot();
 
-    void fetch(`/api/v1/nodes/${nodeId}`, {
+    void apiFetch(`/api/v1/nodes/${nodeId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ title: trimmed }),
@@ -354,7 +354,7 @@ export class NodeController {
     this.session.nodes.push(optimisticNode);
     this.session.persistSnapshot();
 
-    const res = await fetch("/api/v1/nodes", {
+    const res = await apiFetch("/api/v1/nodes", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(optimisticNode),
@@ -383,7 +383,7 @@ export class NodeController {
     this.overlays.resetFolderImmediate();
     this.session.persistSnapshot();
 
-    void fetch(`/api/v1/nodes/${node.id}`, {
+    void apiFetch(`/api/v1/nodes/${node.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -473,7 +473,7 @@ export class NodeController {
     node.settings = newSettings;
     this.session.persistSnapshot();
 
-    void fetch(`/api/v1/nodes/${nodeId}`, {
+    void apiFetch(`/api/v1/nodes/${nodeId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ settings: newSettings }),
@@ -575,7 +575,7 @@ export class NodeController {
       this.nodeModal.open = false;
       this.session.persistSnapshot();
 
-      const res = await fetch("/api/v1/nodes", {
+      const res = await apiFetch("/api/v1/nodes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(optimisticNode),
@@ -604,7 +604,7 @@ export class NodeController {
       this.nodeModal.open = false;
       this.session.persistSnapshot();
 
-      const res = await fetch(`/api/v1/nodes/${nodeId}`, {
+      const res = await apiFetch(`/api/v1/nodes/${nodeId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -645,7 +645,7 @@ export class NodeController {
     }
     this.session.persistSnapshot();
 
-    const res = await fetch(`/api/v1/nodes/${id}`, { method: "DELETE" });
+    const res = await apiFetch(`/api/v1/nodes/${id}`, { method: "DELETE" });
     if (!res.ok) {
       this.session.nodes = prevNodes;
       this.session.persistSnapshot();

@@ -10,6 +10,7 @@ import type {
 } from "../types";
 import { AppearanceController } from "./appearance.svelte";
 import { AppLibraryController } from "./app-library.svelte";
+import { AuthController } from "./auth.svelte";
 import { CalendarController } from "./calendar.svelte";
 import type { GridRect, ScreenBounds, WidgetSizePreset } from "./constants";
 import { DragController } from "./drag-controller.svelte";
@@ -35,6 +36,7 @@ export {
 } from "./constants";
 
 class DashboardStore {
+  readonly auth = new AuthController();
   readonly session = session;
   readonly paging = new PagingController();
   readonly appearance = new AppearanceController();
@@ -60,10 +62,6 @@ class DashboardStore {
     this.vikunja,
   );
 
-  // =========================================================================
-  // Composed Overlay Targets
-  // =========================================================================
-
   openFolder = $derived<DashboardNode | null>(
     this.session.nodes.find((n) => n.id === this.overlays.openFolderId) ?? null,
   );
@@ -82,10 +80,32 @@ class DashboardStore {
 
   constructor() {
     this.paging.syncToIndex(this.session.activeWorkspaceIndex);
+
+    const resetAllOnSignOut = () => {
+      this.session.resetBoardState();
+      this.calendar.reset();
+      this.appearance.isControlCenterOpen = false;
+      this.appearance.reloadFromLocal();
+      this.appLibrary.reloadFromLocal();
+      this.overlays.closeContextMenu();
+      this.overlays.closeSpotlight();
+      this.overlays.closeAppLibrary();
+      this.overlays.closeCalendarModal();
+      this.overlays.closeVikunjaModal();
+      this.overlays.resetFolderImmediate();
+      this.overlays.flippedNodeId = null;
+      this.overlays.isWorkspaceModalOpen = false;
+      this.nodeCtrl.closeNodeModal();
+    };
+
+    this.auth.setOnRevoked(resetAllOnSignOut);
+    this.session.setUnauthorizedHandler(() => {
+      this.auth.handleSessionRevoked();
+    });
   }
 
   init(): () => void {
-    return this.session.init(
+    const cleanupEnv = this.session.initEnvironmentListeners(
       this.paging,
       (prefs) => {
         if (prefs.appearance) {
@@ -97,11 +117,21 @@ class DashboardStore {
       },
       () => this.drag.isBusy(),
     );
+
+    void this.bootAuthenticatedSession();
+    return cleanupEnv;
   }
 
-  // =========================================================================
-  // Core Session State & Derived Responsive Grid Selectors
-  // =========================================================================
+  private async bootAuthenticatedSession(): Promise<void> {
+    const ok = await this.auth.checkSession();
+    if (ok) {
+      this.appearance.reloadFromLocal();
+      this.appLibrary.reloadFromLocal();
+      this.session.startLiveSync();
+    } else {
+      this.session.resetBoardState();
+    }
+  }
 
   get now() {
     return this.session.now;
@@ -171,10 +201,6 @@ class DashboardStore {
     return this.session.findFirstFreeCell(width, height, ignoreNodeId);
   }
 
-  // =========================================================================
-  // Live Health & Weather Signals
-  // =========================================================================
-
   getNodeHealth(nodeId: string): NodeHealthSignal | null {
     const raw = this.session.signals[`node:health:${nodeId}`];
     if (raw && typeof raw === "object" && "status" in raw) {
@@ -223,10 +249,6 @@ class DashboardStore {
     return null;
   }
 
-  // =========================================================================
-  // Paging & Appearance
-  // =========================================================================
-
   get pagePosition() {
     return this.paging.pagePosition;
   }
@@ -271,10 +293,6 @@ class DashboardStore {
   toggleReducedParallax(): void {
     this.appearance.toggleReducedParallax();
   }
-
-  // =========================================================================
-  // Overlays & Modals
-  // =========================================================================
 
   get openFolderId() {
     return this.overlays.openFolderId;
@@ -389,10 +407,6 @@ class DashboardStore {
     this.overlays.closeContextMenu();
   }
 
-  // =========================================================================
-  // Calendar, Smart Stacks & App Library
-  // =========================================================================
-
   get syncingCalendarNodes() {
     return this.calendar.syncingCalendarNodes;
   }
@@ -444,10 +458,6 @@ class DashboardStore {
   recordAppLaunch(nodeId: string) {
     this.appLibrary.recordAppLaunch(nodeId);
   }
-
-  // =========================================================================
-  // Drag, Resize & Grid Layout
-  // =========================================================================
 
   get activeDragNodeId() {
     return this.drag.activeDragNodeId;
@@ -552,10 +562,6 @@ class DashboardStore {
     return this.drag.handleDragEnd(event);
   };
 
-  // =========================================================================
-  // Workspaces & Edit Mode
-  // =========================================================================
-
   springToPage(targetIndex: number, initialVelocity = 0) {
     this.workspaceCtrl.springToPage(targetIndex, initialVelocity);
   }
@@ -598,10 +604,6 @@ class DashboardStore {
   deleteWorkspace(id: string, event?: MouseEvent) {
     return this.workspaceCtrl.deleteWorkspace(id, event);
   }
-
-  // =========================================================================
-  // Nodes, Modals & Quick Actions
-  // =========================================================================
 
   get nodeModal() {
     return this.nodeCtrl.nodeModal;

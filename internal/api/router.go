@@ -3,12 +3,14 @@ package api
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html"
 	"io"
 	"io/fs"
+	"log/slog"
 	"mime"
 	"net/http"
 	"net/url"
@@ -19,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"homie/internal/auth"
 	"homie/internal/crypto"
 	"homie/internal/integrations"
 	"homie/internal/models"
@@ -29,7 +32,6 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// Max base64 string length for a 100KB binary image (~137KB + data URI header).
 const maxCustomIconLength = 150_000
 
 var (
@@ -51,7 +53,6 @@ type urlMetaResponse struct {
 	CanonicalURL string `json:"canonical_url"`
 }
 
-// Bounded TTL in-memory cache to prevent unbounded RAM growth.
 type ttlEntry[V any] struct {
 	val       V
 	expiresAt time.Time
@@ -113,7 +114,6 @@ func (c *boundedTTLCache[V]) Set(key string, val V) {
 	}
 }
 
-// Zero-dependency singleflight group to coalesce concurrent upstream icon/meta fetches.
 type inflightCall struct {
 	wg  sync.WaitGroup
 	val any
@@ -154,6 +154,8 @@ type Server struct {
 	db               *gorm.DB
 	engine           *state.Engine
 	cipher           *crypto.EnvelopeCipher
+	sessionMgr       *auth.SessionManager
+	oidcClient       *auth.OIDCClient
 	calendarProvider *integrations.CalendarProvider
 	vikunjaProvider  *integrations.VikunjaProvider
 	healthProvider   *integrations.HealthCheckProvider
@@ -169,6 +171,8 @@ func NewRouter(
 	db *gorm.DB,
 	engine *state.Engine,
 	cipher *crypto.EnvelopeCipher,
+	sessionMgr *auth.SessionManager,
+	oidcClient *auth.OIDCClient,
 	calendarProvider *integrations.CalendarProvider,
 	vikunjaProvider *integrations.VikunjaProvider,
 	healthProvider *integrations.HealthCheckProvider,
@@ -179,6 +183,8 @@ func NewRouter(
 		db:               db,
 		engine:           engine,
 		cipher:           cipher,
+		sessionMgr:       sessionMgr,
+		oidcClient:       oidcClient,
 		calendarProvider: calendarProvider,
 		vikunjaProvider:  vikunjaProvider,
 		healthProvider:   healthProvider,
@@ -193,43 +199,52 @@ func NewRouter(
 
 	mux := http.NewServeMux()
 
-	// 1. State Synchronization & High-Speed Asset Endpoints
-	mux.HandleFunc("GET /api/v1/bootstrap", s.handleBootstrap)
-	mux.HandleFunc("GET /api/v1/live", s.handleLiveSSE)
-	mux.HandleFunc("GET /api/v1/icons/{domain}", s.handleGetDomainIcon)
-	mux.HandleFunc("GET /api/v1/meta", s.handleGetURLMetadata)
+	// 0. Public OIDC / Auth Endpoints
+	mux.HandleFunc("GET /api/v1/auth/session", s.handleAuthSession)
+	mux.HandleFunc("GET /api/v1/auth/login", s.handleAuthLogin)
+	mux.HandleFunc("GET /api/v1/auth/callback", s.handleAuthCallback)
+	mux.HandleFunc("POST /api/v1/auth/logout", s.handleAuthLogout)
+	mux.HandleFunc("GET /api/v1/auth/logout", s.handleAuthLogoutRedirect)
+	mux.HandleFunc("POST /api/v1/auth/backchannel-logout", s.handleBackChannelLogout)
+	mux.HandleFunc("GET /api/v1/auth/frontchannel-logout", s.handleFrontChannelLogout)
 
-	// 2. Server-Synced Preferences
-	mux.HandleFunc("PUT /api/v1/preferences/{key}", s.handleUpsertPreference)
+	// 1. Authenticated State Synchronization & Asset Endpoints
+	mux.HandleFunc("GET /api/v1/bootstrap", s.requireAuth(s.handleBootstrap))
+	mux.HandleFunc("GET /api/v1/live", s.requireAuth(s.handleLiveSSE))
+	mux.HandleFunc("GET /api/v1/icons/{domain}", s.requireAuth(s.handleGetDomainIcon))
+	mux.HandleFunc("GET /api/v1/meta", s.requireAuth(s.handleGetURLMetadata))
 
-	// 3. Workspace Management Endpoints
-	mux.HandleFunc("GET /api/v1/workspaces", s.handleListWorkspaces)
-	mux.HandleFunc("POST /api/v1/workspaces", s.handleCreateWorkspace)
-	mux.HandleFunc("DELETE /api/v1/workspaces/{id}", s.handleDeleteWorkspace)
+	// 2. Server-Synced Preferences (per-user)
+	mux.HandleFunc("PUT /api/v1/preferences/{key}", s.requireAuth(s.handleUpsertPreference))
 
-	// 4. Node & Layout Management Endpoints (via GORM)
-	mux.HandleFunc("GET /api/v1/nodes", s.handleListNodes)
-	mux.HandleFunc("POST /api/v1/nodes", s.handleCreateNode)
-	mux.HandleFunc("POST /api/v1/nodes/reorder", s.handleReorderNodes)
-	mux.HandleFunc("PATCH /api/v1/nodes/{id}", s.handleUpdateNode)
-	mux.HandleFunc("DELETE /api/v1/nodes/{id}", s.handleDeleteNode)
-	mux.HandleFunc("POST /api/v1/nodes/{id}/calendar-sync", s.handleSyncCalendarNode)
-	mux.HandleFunc("GET /api/v1/nodes/{id}/calendar-events", s.handleQueryCalendarEvents)
+	// 3. Workspace Management Endpoints (per-user)
+	mux.HandleFunc("GET /api/v1/workspaces", s.requireAuth(s.handleListWorkspaces))
+	mux.HandleFunc("POST /api/v1/workspaces", s.requireAuth(s.handleCreateWorkspace))
+	mux.HandleFunc("DELETE /api/v1/workspaces/{id}", s.requireAuth(s.handleDeleteWorkspace))
 
-	// 5. Integration Management Endpoints (via GORM + AES-256-GCM)
-	mux.HandleFunc("GET /api/v1/integrations", s.handleListIntegrations)
-	mux.HandleFunc("POST /api/v1/integrations/{provider}/auth", s.handleCreateIntegration)
-	mux.HandleFunc("DELETE /api/v1/integrations/{id}", s.handleDeleteIntegration)
+	// 4. Node & Layout Management Endpoints (per-user ownership verified)
+	mux.HandleFunc("GET /api/v1/nodes", s.requireAuth(s.handleListNodes))
+	mux.HandleFunc("POST /api/v1/nodes", s.requireAuth(s.handleCreateNode))
+	mux.HandleFunc("POST /api/v1/nodes/reorder", s.requireAuth(s.handleReorderNodes))
+	mux.HandleFunc("PATCH /api/v1/nodes/{id}", s.requireAuth(s.handleUpdateNode))
+	mux.HandleFunc("DELETE /api/v1/nodes/{id}", s.requireAuth(s.handleDeleteNode))
+	mux.HandleFunc("POST /api/v1/nodes/{id}/calendar-sync", s.requireAuth(s.handleSyncCalendarNode))
+	mux.HandleFunc("GET /api/v1/nodes/{id}/calendar-events", s.requireAuth(s.handleQueryCalendarEvents))
 
-	// 6. Vikunja Live Write-Through & Proxy Endpoints
-	mux.HandleFunc("POST /api/v1/vikunja/sync", s.handleVikunjaSync)
-	mux.HandleFunc("POST /api/v1/vikunja/tasks", s.handleVikunjaCreateTask)
-	mux.HandleFunc("PATCH /api/v1/vikunja/tasks/{id}", s.handleVikunjaPatchTask)
-	mux.HandleFunc("DELETE /api/v1/vikunja/tasks/{id}", s.handleVikunjaDeleteTask)
-	mux.HandleFunc("POST /api/v1/vikunja/tasks/{id}/labels", s.handleVikunjaAddLabel)
-	mux.HandleFunc("DELETE /api/v1/vikunja/tasks/{id}/labels/{labelId}", s.handleVikunjaRemoveLabel)
-	mux.HandleFunc("GET /api/v1/vikunja/tasks/{id}/comments", s.handleVikunjaListComments)
-	mux.HandleFunc("POST /api/v1/vikunja/tasks/{id}/comments", s.handleVikunjaAddComment)
+	// 5. Integration Management Endpoints (per-user)
+	mux.HandleFunc("GET /api/v1/integrations", s.requireAuth(s.handleListIntegrations))
+	mux.HandleFunc("POST /api/v1/integrations/{provider}/auth", s.requireAuth(s.handleCreateIntegration))
+	mux.HandleFunc("DELETE /api/v1/integrations/{id}", s.requireAuth(s.handleDeleteIntegration))
+
+	// 6. Vikunja Live Write-Through Endpoints (per-user)
+	mux.HandleFunc("POST /api/v1/vikunja/sync", s.requireAuth(s.handleVikunjaSync))
+	mux.HandleFunc("POST /api/v1/vikunja/tasks", s.requireAuth(s.handleVikunjaCreateTask))
+	mux.HandleFunc("PATCH /api/v1/vikunja/tasks/{id}", s.requireAuth(s.handleVikunjaPatchTask))
+	mux.HandleFunc("DELETE /api/v1/vikunja/tasks/{id}", s.requireAuth(s.handleVikunjaDeleteTask))
+	mux.HandleFunc("POST /api/v1/vikunja/tasks/{id}/labels", s.requireAuth(s.handleVikunjaAddLabel))
+	mux.HandleFunc("DELETE /api/v1/vikunja/tasks/{id}/labels/{labelId}", s.requireAuth(s.handleVikunjaRemoveLabel))
+	mux.HandleFunc("GET /api/v1/vikunja/tasks/{id}/comments", s.requireAuth(s.handleVikunjaListComments))
+	mux.HandleFunc("POST /api/v1/vikunja/tasks/{id}/comments", s.requireAuth(s.handleVikunjaAddComment))
 
 	// 7. Embedded SPA Fallback
 	mux.HandleFunc("GET /", s.handleSPA)
@@ -237,8 +252,353 @@ func NewRouter(
 	return mux
 }
 
+func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		user, ok := s.sessionMgr.ResolveRequest(w, r)
+		if !ok {
+			w.Header().Set("Cache-Control", "no-store")
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next(w, r.WithContext(auth.WithUser(r.Context(), user)))
+	}
+}
+
+func mustUser(r *http.Request) auth.AuthUser {
+	u, _ := auth.UserFromContext(r.Context())
+	return u
+}
+
+// =========================================================================
+// OIDC & Session Endpoints
+// =========================================================================
+
+func (s *Server) resolveBaseURL(r *http.Request) string {
+	scheme := "http"
+	if s.sessionMgr.IsSecureRequest(r) {
+		scheme = "https"
+	}
+	host := r.Header.Get("X-Forwarded-Host")
+	if host == "" {
+		host = r.Host
+	}
+	if idx := strings.IndexByte(host, ','); idx > 0 {
+		host = strings.TrimSpace(host[:idx])
+	}
+	return scheme + "://" + host
+}
+
+func (s *Server) resolveRedirectURI(r *http.Request) string {
+	if configured := s.sessionMgr.Config().RedirectURL; configured != "" {
+		return configured
+	}
+	return s.resolveBaseURL(r) + "/api/v1/auth/callback"
+}
+
+func (s *Server) resolvePostLogoutURI(r *http.Request) string {
+	if configured := s.sessionMgr.Config().PostLogoutRedirectURL; configured != "" {
+		return configured
+	}
+	return s.resolveBaseURL(r) + "/"
+}
+
+func (s *Server) handleAuthSession(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	cfg := s.sessionMgr.Config()
+	if !cfg.Enabled {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"oidcEnabled":   false,
+			"authenticated": true,
+			"providerName":  "Local",
+			"user": auth.AuthUser{
+				ID:          auth.LocalDefaultUserID,
+				Username:    "local",
+				DisplayName: "Local User",
+			},
+		})
+		return
+	}
+
+	user, ok := s.sessionMgr.ResolveRequest(w, r)
+	if !ok {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"oidcEnabled":   true,
+			"authenticated": false,
+			"providerName":  cfg.ProviderName,
+			"user":          nil,
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"oidcEnabled":   true,
+		"authenticated": true,
+		"providerName":  cfg.ProviderName,
+		"user":          user,
+	})
+}
+
+func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	cfg := s.sessionMgr.Config()
+	if !cfg.Enabled {
+		http.Redirect(w, r, "/", http.StatusFound)
+		return
+	}
+
+	stateTok, err := auth.GenerateRandomToken(32)
+	if err != nil {
+		http.Error(w, "entropy failure", http.StatusInternalServerError)
+		return
+	}
+	nonceTok, err := auth.GenerateRandomToken(32)
+	if err != nil {
+		http.Error(w, "entropy failure", http.StatusInternalServerError)
+		return
+	}
+	codeVerifier, err := auth.GenerateRandomToken(32)
+	if err != nil {
+		http.Error(w, "entropy failure", http.StatusInternalServerError)
+		return
+	}
+
+	returnTo := sanitizeReturnTo(r.URL.Query().Get("return_to"))
+	redirectURI := s.resolveRedirectURI(r)
+
+	authURL, err := s.oidcClient.BuildAuthorizationURL(r.Context(), redirectURI, stateTok, nonceTok, codeVerifier)
+	if err != nil {
+		slog.Error("OIDC authorization URL build failed", "error", err)
+		http.Redirect(w, r, "/?auth_error="+url.QueryEscape("Identity provider unavailable"), http.StatusFound)
+		return
+	}
+
+	if err := s.sessionMgr.SetTXCookie(w, r, auth.OIDCTxState{
+		State:        stateTok,
+		Nonce:        nonceTok,
+		CodeVerifier: codeVerifier,
+		RedirectURI:  redirectURI,
+		ReturnTo:     returnTo,
+		IssuedAt:     time.Now().Unix(),
+	}); err != nil {
+		http.Error(w, "failed setting login transaction", http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, r, authURL, http.StatusFound)
+}
+
+func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if !s.sessionMgr.Config().Enabled {
+		http.Redirect(w, r, "/", http.StatusFound)
+		return
+	}
+
+	if errCode := strings.TrimSpace(r.URL.Query().Get("error")); errCode != "" {
+		desc := strings.TrimSpace(r.URL.Query().Get("error_description"))
+		msg := errCode
+		if desc != "" {
+			msg = desc
+		}
+		_, _ = s.sessionMgr.PopTXCookie(w, r)
+		http.Redirect(w, r, "/?auth_error="+url.QueryEscape(msg), http.StatusFound)
+		return
+	}
+
+	tx, err := s.sessionMgr.PopTXCookie(w, r)
+	if err != nil {
+		http.Redirect(w, r, "/?auth_error="+url.QueryEscape(err.Error()), http.StatusFound)
+		return
+	}
+
+	state := r.URL.Query().Get("state")
+	code := r.URL.Query().Get("code")
+	if code == "" || subtle.ConstantTimeCompare([]byte(state), []byte(tx.State)) != 1 {
+		http.Redirect(w, r, "/?auth_error="+url.QueryEscape("Invalid OIDC state or missing authorization code"), http.StatusFound)
+		return
+	}
+
+	tok, err := s.oidcClient.ExchangeCode(r.Context(), code, tx.RedirectURI, tx.CodeVerifier)
+	if err != nil {
+		slog.Warn("OIDC code exchange failed", "error", err)
+		http.Redirect(w, r, "/?auth_error="+url.QueryEscape("Authentication exchange failed"), http.StatusFound)
+		return
+	}
+	if tok.IDToken == "" {
+		http.Redirect(w, r, "/?auth_error="+url.QueryEscape("Provider did not return an ID token"), http.StatusFound)
+		return
+	}
+
+	claims, err := s.oidcClient.VerifyIDToken(r.Context(), tok.IDToken, tx.Nonce, true)
+	if err != nil {
+		slog.Warn("OIDC ID token verification failed", "error", err)
+		http.Redirect(w, r, "/?auth_error="+url.QueryEscape("ID token verification failed"), http.StatusFound)
+		return
+	}
+
+	var userInfo *auth.UserInfoClaims
+	if ui, err := s.oidcClient.FetchUserInfo(r.Context(), tok.AccessToken); err == nil {
+		if ui.Subject == "" || ui.Subject == claims.Subject {
+			userInfo = ui
+		}
+	}
+
+	user, sess, err := s.sessionMgr.CreateLoginSession(r.Context(), claims, userInfo, tok)
+	if err != nil {
+		slog.Warn("OIDC login rejected", "sub", claims.Subject, "error", err)
+		http.Redirect(w, r, "/?auth_error="+url.QueryEscape(err.Error()), http.StatusFound)
+		return
+	}
+
+	s.sessionMgr.SetSessionCookie(w, r, sess.ID)
+	_ = s.engine.RebuildSnapshot(r.Context(), user.ID)
+
+	if s.calendarProvider != nil {
+		s.calendarProvider.TriggerSync()
+	}
+	if s.weatherProvider != nil {
+		s.weatherProvider.TriggerSync()
+	}
+
+	http.Redirect(w, r, sanitizeReturnTo(tx.ReturnTo), http.StatusFound)
+}
+
+func (s *Server) performLocalLogout(w http.ResponseWriter, r *http.Request) string {
+	sid, idToken, refreshToken := s.sessionMgr.RevokeCurrentSession(r.Context(), r)
+	s.sessionMgr.ClearSessionCookie(w, r)
+
+	if sid != uuid.Nil {
+		s.engine.DisconnectSessions(r.Context(), []uuid.UUID{sid})
+	}
+	if refreshToken != "" {
+		go s.oidcClient.RevokeToken(context.Background(), refreshToken, "refresh_token")
+	}
+
+	if !s.sessionMgr.Config().Enabled {
+		return ""
+	}
+	return s.oidcClient.BuildEndSessionURL(r.Context(), idToken, s.resolvePostLogoutURI(r))
+}
+
+func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	logoutURL := s.performLocalLogout(w, r)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":        true,
+		"logoutUrl": logoutURL,
+	})
+}
+
+func (s *Server) handleAuthLogoutRedirect(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	logoutURL := s.performLocalLogout(w, r)
+	if logoutURL != "" {
+		http.Redirect(w, r, logoutURL, http.StatusFound)
+		return
+	}
+	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+// handleBackChannelLogout implements OIDC Back-Channel Logout 1.0 (RFC 8957 / Authentik).
+func (s *Server) handleBackChannelLogout(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+
+	if !s.sessionMgr.Config().Enabled {
+		http.Error(w, "OIDC is not enabled", http.StatusBadRequest)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form body", http.StatusBadRequest)
+		return
+	}
+
+	logoutToken := strings.TrimSpace(r.PostForm.Get("logout_token"))
+	if logoutToken == "" {
+		http.Error(w, "missing logout_token", http.StatusBadRequest)
+		return
+	}
+
+	claims, err := s.oidcClient.VerifyLogoutToken(r.Context(), logoutToken)
+	if err != nil {
+		slog.Warn("Back-Channel Logout token rejected", "error", err)
+		http.Error(w, "invalid logout_token: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if err := s.sessionMgr.CheckAndRecordLogoutJTI(r.Context(), claims.JTI, claims.Expiry); err != nil {
+		slog.Warn("Back-Channel Logout replay rejected", "jti", claims.JTI, "error", err)
+		http.Error(w, "replayed logout_token", http.StatusBadRequest)
+		return
+	}
+
+	revokedIDs, err := s.sessionMgr.RevokeByBackChannel(r.Context(), claims.Subject, claims.SID)
+	if err != nil {
+		slog.Error("Back-Channel Logout session deletion failed", "error", err)
+		http.Error(w, "failed revoking session", http.StatusInternalServerError)
+		return
+	}
+
+	s.engine.DisconnectSessions(r.Context(), revokedIDs)
+	slog.Info("Back-Channel Logout processed", "sub", claims.Subject, "sid", claims.SID, "revoked_sessions", len(revokedIDs))
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleFrontChannelLogout implements OIDC Front-Channel Logout 1.0 iframe notifications.
+func (s *Server) handleFrontChannelLogout(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+
+	cfg := s.sessionMgr.Config()
+	if !cfg.Enabled {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	iss := strings.TrimSpace(r.URL.Query().Get("iss"))
+	sid := strings.TrimSpace(r.URL.Query().Get("sid"))
+	if iss != "" && strings.TrimRight(iss, "/") != strings.TrimRight(cfg.IssuerURL, "/") {
+		http.Error(w, "issuer mismatch", http.StatusBadRequest)
+		return
+	}
+	if iss == "" && sid != "" {
+		http.Error(w, "iss required when sid is present", http.StatusBadRequest)
+		return
+	}
+
+	var currentSID uuid.UUID
+	if user, ok := s.sessionMgr.ResolveRequest(nil, r); ok {
+		currentSID = user.SessionID
+	}
+
+	revokedIDs := s.sessionMgr.RevokeByFrontChannel(r.Context(), sid, currentSID)
+	s.sessionMgr.ClearSessionCookie(w, r)
+	s.engine.DisconnectSessions(r.Context(), revokedIDs)
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func sanitizeReturnTo(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || !strings.HasPrefix(trimmed, "/") || strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, `/\`) {
+		return "/"
+	}
+	return trimmed
+}
+
+// =========================================================================
+// State Synchronization & Assets (Per-User Scoped)
+// =========================================================================
+
 func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
-	snap := s.engine.LoadSnapshot()
+	user := mustUser(r)
+	snap, err := s.engine.LoadOrBuildSnapshot(r.Context(), user.ID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	if inm := r.Header.Get("If-None-Match"); inm != "" && inm == snap.ETag {
 		w.Header().Set("ETag", snap.ETag)
@@ -248,7 +608,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("ETag", snap.ETag)
-	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Cache-Control", "private, no-cache")
 
 	if strings.Contains(r.Header.Get("Accept-Encoding"), "br") && len(snap.BrotliBytes) > 0 {
 		w.Header().Set("Content-Encoding", "br")
@@ -262,6 +622,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLiveSSE(w http.ResponseWriter, r *http.Request) {
+	user := mustUser(r)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
@@ -269,15 +630,15 @@ func (s *Server) handleLiveSSE(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Cache-Control", "private, no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	ch, unsubscribe := s.engine.SubscribeSSE()
+	ch, revokedCh, unsubscribe := s.engine.SubscribeSSE(user.ID, user.SessionID)
 	defer unsubscribe()
 
 	_, _ = fmt.Fprintf(w, ": connected\n\n")
-	for _, delta := range s.engine.CurrentSignalDeltas() {
+	for _, delta := range s.engine.CurrentSignalDeltas(user.ID) {
 		_, _ = fmt.Fprintf(w, "data: %s\n\n", delta)
 	}
 	flusher.Flush()
@@ -286,6 +647,18 @@ func (s *Server) handleLiveSSE(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-revokedCh:
+			for {
+				select {
+				case msg, ok := <-ch:
+					if ok {
+						_, _ = fmt.Fprintf(w, "data: %s\n\n", msg)
+					}
+				default:
+					flusher.Flush()
+					return
+				}
+			}
 		case msg, ok := <-ch:
 			if !ok {
 				return
@@ -297,6 +670,7 @@ func (s *Server) handleLiveSSE(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpsertPreference(w http.ResponseWriter, r *http.Request) {
+	user := mustUser(r)
 	key := strings.TrimSpace(r.PathValue("key"))
 	if key == "" || len(key) > 64 {
 		http.Error(w, "invalid preference key", http.StatusBadRequest)
@@ -310,13 +684,14 @@ func (s *Server) handleUpsertPreference(w http.ResponseWriter, r *http.Request) 
 	}
 
 	pref := models.Preference{
-		Key:   key,
-		Value: json.RawMessage(raw),
+		UserID: user.ID,
+		Key:    key,
+		Value:  json.RawMessage(raw),
 	}
 
 	if err := s.db.WithContext(r.Context()).
 		Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "key"}},
+			Columns:   []clause.Column{{Name: "user_id"}, {Name: "key"}},
 			DoUpdates: clause.AssignmentColumns([]string{"value", "updated_at"}),
 		}).
 		Create(&pref).Error; err != nil {
@@ -324,7 +699,7 @@ func (s *Server) handleUpsertPreference(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	_ = s.engine.RebuildSnapshot(r.Context())
+	_ = s.engine.RebuildSnapshot(r.Context(), user.ID)
 	writeJSON(w, http.StatusOK, pref)
 }
 
@@ -566,9 +941,17 @@ func humanizeDomainTitle(domain string) string {
 	return strings.ToUpper(base[:1]) + base[1:]
 }
 
+// =========================================================================
+// Workspaces & Nodes (Strictly Per-User Isolated)
+// =========================================================================
+
 func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
+	user := mustUser(r)
 	var workspaces []models.Workspace
-	if err := s.db.WithContext(r.Context()).Order("created_at ASC").Find(&workspaces).Error; err != nil {
+	if err := s.db.WithContext(r.Context()).
+		Where("user_id = ?", user.ID).
+		Order("created_at ASC").
+		Find(&workspaces).Error; err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -576,6 +959,7 @@ func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
+	user := mustUser(r)
 	var input struct {
 		ID   *uuid.UUID `json:"id"`
 		Name string     `json:"name"`
@@ -586,7 +970,8 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ws := models.Workspace{
-		Name: strings.TrimSpace(input.Name),
+		UserID: user.ID,
+		Name:   strings.TrimSpace(input.Name),
 	}
 	if input.ID != nil && *input.ID != uuid.Nil {
 		ws.ID = *input.ID
@@ -597,20 +982,27 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = s.engine.RebuildSnapshot(r.Context())
+	_ = s.engine.RebuildSnapshot(r.Context(), user.ID)
 	writeJSON(w, http.StatusCreated, ws)
 }
 
 func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
+	user := mustUser(r)
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		http.Error(w, "invalid workspace UUID", http.StatusBadRequest)
 		return
 	}
 
+	var existing models.Workspace
+	if err := s.db.WithContext(r.Context()).First(&existing, "id = ? AND user_id = ?", id, user.ID).Error; err != nil {
+		http.Error(w, "workspace not found", http.StatusNotFound)
+		return
+	}
+
 	err = s.db.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
 		var fallback models.Workspace
-		if err := tx.Where("id <> ?", id).Order("created_at ASC").First(&fallback).Error; err == nil {
+		if err := tx.Where("id <> ? AND user_id = ?", id, user.ID).Order("created_at ASC").First(&fallback).Error; err == nil {
 			var dockIDs []uuid.UUID
 			_ = tx.Model(&models.Node{}).
 				Where("workspace_id = ? AND parent_id IS NULL AND grid_x = -1 AND grid_y = -1", id).
@@ -625,20 +1017,27 @@ func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		return tx.Delete(&models.Workspace{}, "id = ?", id).Error
+		return tx.Delete(&models.Workspace{}, "id = ? AND user_id = ?", id, user.ID).Error
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	_ = s.engine.RebuildSnapshot(r.Context())
+	_ = s.engine.RebuildSnapshot(r.Context(), user.ID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
+	user := mustUser(r)
 	var nodes []models.Node
-	if err := s.db.WithContext(r.Context()).Order("sort_order ASC, created_at ASC").Find(&nodes).Error; err != nil {
+	if err := s.db.WithContext(r.Context()).
+		Table("nodes").
+		Select("nodes.*").
+		Joins("JOIN workspaces ON workspaces.id = nodes.workspace_id").
+		Where("workspaces.user_id = ?", user.ID).
+		Order("nodes.sort_order ASC, nodes.created_at ASC").
+		Find(&nodes).Error; err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -646,6 +1045,7 @@ func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
+	user := mustUser(r)
 	var input struct {
 		ID          *uuid.UUID      `json:"id"`
 		WorkspaceID uuid.UUID       `json:"workspace_id"`
@@ -665,6 +1065,29 @@ func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
 		return
+	}
+
+	// Verify workspace ownership
+	var wsCount int64
+	if err := s.db.WithContext(r.Context()).
+		Model(&models.Workspace{}).
+		Where("id = ? AND user_id = ?", input.WorkspaceID, user.ID).
+		Count(&wsCount).Error; err != nil || wsCount == 0 {
+		http.Error(w, "workspace not found", http.StatusForbidden)
+		return
+	}
+
+	// Verify parent node ownership if nested
+	if input.ParentID != nil {
+		var parentCount int64
+		if err := s.db.WithContext(r.Context()).
+			Table("nodes").
+			Joins("JOIN workspaces ON workspaces.id = nodes.workspace_id").
+			Where("nodes.id = ? AND workspaces.user_id = ?", *input.ParentID, user.ID).
+			Count(&parentCount).Error; err != nil || parentCount == 0 {
+			http.Error(w, "parent node not found", http.StatusForbidden)
+			return
+		}
 	}
 
 	if input.NodeType != "action" {
@@ -712,7 +1135,7 @@ func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = s.engine.RebuildSnapshot(r.Context())
+	_ = s.engine.RebuildSnapshot(r.Context(), user.ID)
 
 	if node.NodeType == "calendar" && s.calendarProvider != nil {
 		s.calendarProvider.TriggerSync()
@@ -728,6 +1151,7 @@ func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleReorderNodes(w http.ResponseWriter, r *http.Request) {
+	user := mustUser(r)
 	var items []struct {
 		ID        uuid.UUID  `json:"id"`
 		SortOrder int32      `json:"sort_order"`
@@ -740,6 +1164,34 @@ func (s *Server) handleReorderNodes(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewDecoder(r.Body).Decode(&items); err != nil {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	if len(items) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	// Verify ownership of all referenced node IDs & parent IDs
+	idSet := make(map[uuid.UUID]bool, len(items)*2)
+	for _, it := range items {
+		idSet[it.ID] = true
+		if it.ParentID != nil {
+			idSet[*it.ParentID] = true
+		}
+	}
+	uniqueIDs := make([]uuid.UUID, 0, len(idSet))
+	for id := range idSet {
+		uniqueIDs = append(uniqueIDs, id)
+	}
+
+	var ownedCount int64
+	if err := s.db.WithContext(r.Context()).
+		Table("nodes").
+		Joins("JOIN workspaces ON workspaces.id = nodes.workspace_id").
+		Where("nodes.id IN ? AND workspaces.user_id = ?", uniqueIDs, user.ID).
+		Count(&ownedCount).Error; err != nil || int(ownedCount) != len(uniqueIDs) {
+		http.Error(w, "forbidden node reorder", http.StatusForbidden)
 		return
 	}
 
@@ -772,19 +1224,34 @@ func (s *Server) handleReorderNodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = s.engine.RebuildSnapshot(r.Context())
+	_ = s.engine.RebuildSnapshot(r.Context(), user.ID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) loadOwnedNode(ctx context.Context, userID, nodeID uuid.UUID) (*models.Node, error) {
+	var node models.Node
+	err := s.db.WithContext(ctx).
+		Table("nodes").
+		Select("nodes.*").
+		Joins("JOIN workspaces ON workspaces.id = nodes.workspace_id").
+		Where("nodes.id = ? AND workspaces.user_id = ?", nodeID, userID).
+		First(&node).Error
+	if err != nil {
+		return nil, err
+	}
+	return &node, nil
+}
+
 func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
+	user := mustUser(r)
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		http.Error(w, "invalid node UUID", http.StatusBadRequest)
 		return
 	}
 
-	var node models.Node
-	if err := s.db.WithContext(r.Context()).First(&node, "id = ?", id).Error; err != nil {
+	node, err := s.loadOwnedNode(r.Context(), user.ID, id)
+	if err != nil {
 		http.Error(w, "node not found", http.StatusNotFound)
 		return
 	}
@@ -793,6 +1260,39 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
 		return
+	}
+
+	delete(patch, "id")
+	delete(patch, "created_at")
+
+	if rawWS, hasWS := patch["workspace_id"]; hasWS {
+		wsStr, ok := rawWS.(string)
+		targetWS, parseErr := uuid.Parse(wsStr)
+		if !ok || parseErr != nil {
+			http.Error(w, "invalid workspace_id", http.StatusBadRequest)
+			return
+		}
+		var wsCount int64
+		if err := s.db.WithContext(r.Context()).
+			Model(&models.Workspace{}).
+			Where("id = ? AND user_id = ?", targetWS, user.ID).
+			Count(&wsCount).Error; err != nil || wsCount == 0 {
+			http.Error(w, "target workspace forbidden", http.StatusForbidden)
+			return
+		}
+	}
+
+	if rawParent, hasParent := patch["parent_id"]; hasParent && rawParent != nil {
+		pStr, ok := rawParent.(string)
+		targetParent, parseErr := uuid.Parse(pStr)
+		if !ok || parseErr != nil {
+			http.Error(w, "invalid parent_id", http.StatusBadRequest)
+			return
+		}
+		if _, err := s.loadOwnedNode(r.Context(), user.ID, targetParent); err != nil {
+			http.Error(w, "target parent forbidden", http.StatusForbidden)
+			return
+		}
 	}
 
 	if node.NodeType != "action" {
@@ -810,12 +1310,12 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := s.db.WithContext(r.Context()).Model(&node).Updates(patch).Error; err != nil {
+	if err := s.db.WithContext(r.Context()).Model(node).Updates(patch).Error; err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	_ = s.engine.RebuildSnapshot(r.Context())
+	_ = s.engine.RebuildSnapshot(r.Context(), user.ID)
 
 	if node.NodeType == "calendar" && s.calendarProvider != nil {
 		s.calendarProvider.TriggerSync()
@@ -831,6 +1331,7 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSyncCalendarNode(w http.ResponseWriter, r *http.Request) {
+	user := mustUser(r)
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		http.Error(w, "invalid node UUID", http.StatusBadRequest)
@@ -842,7 +1343,7 @@ func (s *Server) handleSyncCalendarNode(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	status, err := s.calendarProvider.SyncNodeNow(r.Context(), id)
+	status, err := s.calendarProvider.SyncNodeNow(r.Context(), user.ID, id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -852,6 +1353,7 @@ func (s *Server) handleSyncCalendarNode(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleQueryCalendarEvents(w http.ResponseWriter, r *http.Request) {
+	user := mustUser(r)
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		http.Error(w, "invalid node UUID", http.StatusBadRequest)
@@ -875,7 +1377,7 @@ func (s *Server) handleQueryCalendarEvents(w http.ResponseWriter, r *http.Reques
 	}
 	endTime = endTime.Add(23*time.Hour + 59*time.Minute + 59*time.Second)
 
-	events, err := s.calendarProvider.QueryNodeEvents(r.Context(), id, startTime, endTime)
+	events, err := s.calendarProvider.QueryNodeEvents(r.Context(), user.ID, id, startTime, endTime)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -884,9 +1386,15 @@ func (s *Server) handleQueryCalendarEvents(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *Server) handleDeleteNode(w http.ResponseWriter, r *http.Request) {
+	user := mustUser(r)
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		http.Error(w, "invalid node UUID", http.StatusBadRequest)
+		return
+	}
+
+	if _, err := s.loadOwnedNode(r.Context(), user.ID, id); err != nil {
+		http.Error(w, "node not found", http.StatusNotFound)
 		return
 	}
 
@@ -895,13 +1403,21 @@ func (s *Server) handleDeleteNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = s.engine.RebuildSnapshot(r.Context())
+	_ = s.engine.RebuildSnapshot(r.Context(), user.ID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// =========================================================================
+// Integrations & Vikunja (Per-User Isolated)
+// =========================================================================
+
 func (s *Server) handleListIntegrations(w http.ResponseWriter, r *http.Request) {
+	user := mustUser(r)
 	var list []models.Integration
-	if err := s.db.WithContext(r.Context()).Order("created_at ASC").Find(&list).Error; err != nil {
+	if err := s.db.WithContext(r.Context()).
+		Where("user_id = ?", user.ID).
+		Order("created_at ASC").
+		Find(&list).Error; err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -909,6 +1425,7 @@ func (s *Server) handleListIntegrations(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleCreateIntegration(w http.ResponseWriter, r *http.Request) {
+	user := mustUser(r)
 	provider := r.PathValue("provider")
 
 	var input struct {
@@ -921,7 +1438,7 @@ func (s *Server) handleCreateIntegration(w http.ResponseWriter, r *http.Request)
 	}
 
 	if provider == "vikunja" {
-		s.handleAuthVikunjaIntegration(w, r, input.Credentials)
+		s.handleAuthVikunjaIntegration(w, r, user.ID, input.Credentials)
 		return
 	}
 
@@ -936,6 +1453,7 @@ func (s *Server) handleCreateIntegration(w http.ResponseWriter, r *http.Request)
 	}
 
 	integration := models.Integration{
+		UserID:      user.ID,
 		Provider:    provider,
 		Credentials: encryptedCreds,
 		Settings:    input.Settings,
@@ -949,7 +1467,7 @@ func (s *Server) handleCreateIntegration(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusCreated, integration)
 }
 
-func (s *Server) handleAuthVikunjaIntegration(w http.ResponseWriter, r *http.Request, rawCreds json.RawMessage) {
+func (s *Server) handleAuthVikunjaIntegration(w http.ResponseWriter, r *http.Request, userID uuid.UUID, rawCreds json.RawMessage) {
 	var req struct {
 		IntegrationID string `json:"integration_id"`
 		Label         string `json:"label"`
@@ -990,7 +1508,7 @@ func (s *Server) handleAuthVikunjaIntegration(w http.ResponseWriter, r *http.Req
 	}
 
 	authedClient := integrations.NewVikunjaClient(canonicalBase, apiToken)
-	user, err := authedClient.CurrentUser(r.Context())
+	vUser, err := authedClient.CurrentUser(r.Context())
 	if err != nil {
 		http.Error(w, fmt.Sprintf("failed verifying Vikunja token: %v", err), http.StatusUnauthorized)
 		return
@@ -1006,7 +1524,7 @@ func (s *Server) handleAuthVikunjaIntegration(w http.ResponseWriter, r *http.Req
 
 	var existingRows []models.Integration
 	if err := s.db.WithContext(r.Context()).
-		Where("provider = ?", "vikunja").
+		Where("user_id = ? AND provider = ?", userID, "vikunja").
 		Order("created_at ASC").
 		Find(&existingRows).Error; err == nil {
 		requestedID, parseErr := uuid.Parse(strings.TrimSpace(req.IntegrationID))
@@ -1025,7 +1543,7 @@ func (s *Server) handleAuthVikunjaIntegration(w http.ResponseWriter, r *http.Req
 				}
 				break
 			}
-			if req.IntegrationID == "" && meta.ServerURL == canonicalBase && meta.Username == user.Username {
+			if req.IntegrationID == "" && meta.ServerURL == canonicalBase && meta.Username == vUser.Username {
 				existingID = row.ID
 				if label == "" {
 					label = meta.Label
@@ -1040,8 +1558,8 @@ func (s *Server) handleAuthVikunjaIntegration(w http.ResponseWriter, r *http.Req
 		ServerURL:   canonicalBase,
 		FrontendURL: frontendURL,
 		APIToken:    apiToken,
-		Username:    user.Username,
-		UserID:      user.ID,
+		Username:    vUser.Username,
+		UserID:      vUser.ID,
 	})
 	if err != nil {
 		http.Error(w, "failed encoding Vikunja credentials", http.StatusInternalServerError)
@@ -1058,21 +1576,22 @@ func (s *Server) handleAuthVikunjaIntegration(w http.ResponseWriter, r *http.Req
 		"label":        label,
 		"server_url":   canonicalBase,
 		"frontend_url": frontendURL,
-		"username":     user.Username,
-		"user_id":      user.ID,
+		"username":     vUser.Username,
+		"user_id":      vUser.ID,
 	})
 
 	var integration models.Integration
 	err = s.db.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
 		if existingID != uuid.Nil {
 			return tx.Model(&models.Integration{}).
-				Where("id = ?", existingID).
+				Where("id = ? AND user_id = ?", existingID, userID).
 				Updates(map[string]any{
 					"credentials": encryptedCreds,
 					"settings":    safeSettings,
 				}).Error
 		}
 		integration = models.Integration{
+			UserID:      userID,
 			Provider:    "vikunja",
 			Credentials: encryptedCreds,
 			Settings:    safeSettings,
@@ -1090,7 +1609,7 @@ func (s *Server) handleAuthVikunjaIntegration(w http.ResponseWriter, r *http.Req
 	}
 
 	if s.vikunjaProvider != nil {
-		acct := s.vikunjaProvider.SyncNow(r.Context(), targetID.String())
+		acct := s.vikunjaProvider.SyncNow(r.Context(), userID, targetID.String())
 		writeJSON(w, http.StatusCreated, acct)
 		return
 	}
@@ -1098,6 +1617,7 @@ func (s *Server) handleAuthVikunjaIntegration(w http.ResponseWriter, r *http.Req
 }
 
 func (s *Server) handleDeleteIntegration(w http.ResponseWriter, r *http.Request) {
+	user := mustUser(r)
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		http.Error(w, "invalid integration UUID", http.StatusBadRequest)
@@ -1105,29 +1625,36 @@ func (s *Server) handleDeleteIntegration(w http.ResponseWriter, r *http.Request)
 	}
 
 	var existing models.Integration
-	_ = s.db.WithContext(r.Context()).First(&existing, "id = ?", id).Error
+	if err := s.db.WithContext(r.Context()).
+		First(&existing, "id = ? AND user_id = ?", id, user.ID).Error; err != nil {
+		http.Error(w, "integration not found", http.StatusNotFound)
+		return
+	}
 
-	if err := s.db.WithContext(r.Context()).Delete(&models.Integration{}, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(r.Context()).
+		Delete(&models.Integration{}, "id = ? AND user_id = ?", id, user.ID).Error; err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	if existing.Provider == "vikunja" && s.vikunjaProvider != nil {
-		s.vikunjaProvider.SyncNow(r.Context(), "")
+		s.vikunjaProvider.SyncNow(r.Context(), user.ID, "")
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleVikunjaSync(w http.ResponseWriter, r *http.Request) {
+	user := mustUser(r)
 	if s.vikunjaProvider == nil {
 		http.Error(w, "vikunja provider unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	integrationID := strings.TrimSpace(r.URL.Query().Get("integration_id"))
-	writeJSON(w, http.StatusOK, s.vikunjaProvider.SyncNow(r.Context(), integrationID))
+	writeJSON(w, http.StatusOK, s.vikunjaProvider.SyncNow(r.Context(), user.ID, integrationID))
 }
 
 func (s *Server) handleVikunjaCreateTask(w http.ResponseWriter, r *http.Request) {
+	user := mustUser(r)
 	if s.vikunjaProvider == nil {
 		http.Error(w, "vikunja provider unavailable", http.StatusServiceUnavailable)
 		return
@@ -1150,7 +1677,7 @@ func (s *Server) handleVikunjaCreateTask(w http.ResponseWriter, r *http.Request)
 	if integrationID == "" {
 		integrationID = strings.TrimSpace(r.URL.Query().Get("integration_id"))
 	}
-	task, err := s.vikunjaProvider.CreateTask(r.Context(), integrationID, input.ProjectID, integrations.VikunjaTaskCreate{
+	task, err := s.vikunjaProvider.CreateTask(r.Context(), user.ID, integrationID, input.ProjectID, integrations.VikunjaTaskCreate{
 		Title:       strings.TrimSpace(input.Title),
 		Description: input.Description,
 		Priority:    input.Priority,
@@ -1165,6 +1692,7 @@ func (s *Server) handleVikunjaCreateTask(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handleVikunjaPatchTask(w http.ResponseWriter, r *http.Request) {
+	user := mustUser(r)
 	if s.vikunjaProvider == nil {
 		http.Error(w, "vikunja provider unavailable", http.StatusServiceUnavailable)
 		return
@@ -1180,7 +1708,7 @@ func (s *Server) handleVikunjaPatchTask(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	integrationID := strings.TrimSpace(r.URL.Query().Get("integration_id"))
-	task, err := s.vikunjaProvider.PatchTask(r.Context(), integrationID, taskID, patch)
+	task, err := s.vikunjaProvider.PatchTask(r.Context(), user.ID, integrationID, taskID, patch)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -1189,6 +1717,7 @@ func (s *Server) handleVikunjaPatchTask(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleVikunjaDeleteTask(w http.ResponseWriter, r *http.Request) {
+	user := mustUser(r)
 	if s.vikunjaProvider == nil {
 		http.Error(w, "vikunja provider unavailable", http.StatusServiceUnavailable)
 		return
@@ -1199,7 +1728,7 @@ func (s *Server) handleVikunjaDeleteTask(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	integrationID := strings.TrimSpace(r.URL.Query().Get("integration_id"))
-	if err := s.vikunjaProvider.DeleteTask(r.Context(), integrationID, taskID); err != nil {
+	if err := s.vikunjaProvider.DeleteTask(r.Context(), user.ID, integrationID, taskID); err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -1207,6 +1736,7 @@ func (s *Server) handleVikunjaDeleteTask(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handleVikunjaAddLabel(w http.ResponseWriter, r *http.Request) {
+	user := mustUser(r)
 	if s.vikunjaProvider == nil {
 		http.Error(w, "vikunja provider unavailable", http.StatusServiceUnavailable)
 		return
@@ -1224,7 +1754,7 @@ func (s *Server) handleVikunjaAddLabel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	integrationID := strings.TrimSpace(r.URL.Query().Get("integration_id"))
-	task, err := s.vikunjaProvider.SetTaskLabel(r.Context(), integrationID, taskID, body.LabelID, true)
+	task, err := s.vikunjaProvider.SetTaskLabel(r.Context(), user.ID, integrationID, taskID, body.LabelID, true)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -1233,6 +1763,7 @@ func (s *Server) handleVikunjaAddLabel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleVikunjaRemoveLabel(w http.ResponseWriter, r *http.Request) {
+	user := mustUser(r)
 	if s.vikunjaProvider == nil {
 		http.Error(w, "vikunja provider unavailable", http.StatusServiceUnavailable)
 		return
@@ -1244,7 +1775,7 @@ func (s *Server) handleVikunjaRemoveLabel(w http.ResponseWriter, r *http.Request
 		return
 	}
 	integrationID := strings.TrimSpace(r.URL.Query().Get("integration_id"))
-	task, err := s.vikunjaProvider.SetTaskLabel(r.Context(), integrationID, taskID, labelID, false)
+	task, err := s.vikunjaProvider.SetTaskLabel(r.Context(), user.ID, integrationID, taskID, labelID, false)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -1253,6 +1784,7 @@ func (s *Server) handleVikunjaRemoveLabel(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleVikunjaListComments(w http.ResponseWriter, r *http.Request) {
+	user := mustUser(r)
 	if s.vikunjaProvider == nil {
 		http.Error(w, "vikunja provider unavailable", http.StatusServiceUnavailable)
 		return
@@ -1263,7 +1795,7 @@ func (s *Server) handleVikunjaListComments(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	integrationID := strings.TrimSpace(r.URL.Query().Get("integration_id"))
-	comments, err := s.vikunjaProvider.ListTaskComments(r.Context(), integrationID, taskID)
+	comments, err := s.vikunjaProvider.ListTaskComments(r.Context(), user.ID, integrationID, taskID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -1272,6 +1804,7 @@ func (s *Server) handleVikunjaListComments(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *Server) handleVikunjaAddComment(w http.ResponseWriter, r *http.Request) {
+	user := mustUser(r)
 	if s.vikunjaProvider == nil {
 		http.Error(w, "vikunja provider unavailable", http.StatusServiceUnavailable)
 		return
@@ -1289,7 +1822,7 @@ func (s *Server) handleVikunjaAddComment(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	integrationID := strings.TrimSpace(r.URL.Query().Get("integration_id"))
-	comment, err := s.vikunjaProvider.AddTaskComment(r.Context(), integrationID, taskID, body.Comment)
+	comment, err := s.vikunjaProvider.AddTaskComment(r.Context(), user.ID, integrationID, taskID, body.Comment)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return

@@ -9,6 +9,22 @@ export type NodeType =
 
 export type WallpaperPreset = "cupertino" | "aurora" | "solar" | "titanium";
 
+export interface AuthUser {
+  id: string;
+  username: string;
+  displayName: string;
+  email: string;
+  avatarUrl: string;
+  groups?: string[];
+}
+
+export interface AuthSessionResponse {
+  oidcEnabled: boolean;
+  authenticated: boolean;
+  providerName: string;
+  user: AuthUser | null;
+}
+
 export interface AppearancePreferences {
   wallpaper: WallpaperPreset;
   showIconLabels: boolean;
@@ -171,7 +187,7 @@ export interface CalendarEvent {
   id: string;
   title: string;
   time: string;
-  date?: string; // ISO YYYY-MM-DD
+  date?: string;
   color?: string;
   location?: string;
   description?: string;
@@ -191,31 +207,24 @@ export interface WorldClockCity {
 }
 
 export interface NodeSettings {
-  // Responsive per-breakpoint coordinate overrides (e.g. "8" for tablet, "4" for mobile)
   layouts?: Record<string, ResponsiveRectOverride>;
-  // Action health probe settings
   healthCheck?: boolean;
   healthIgnoreTLS?: boolean;
-  // Weather widget settings
   location?: string;
   tempUnit?: "C" | "F";
-  // Clock & Calendar shared timezone setting
   timezone?: string;
   flag?: string;
   clockFace?: "analog" | "digital";
   sweepSeconds?: boolean;
   cities?: WorldClockCity[];
-  // Search widget settings
   placeholder?: string;
   engineUrl?: string;
-  // Vikunja Tasks widget settings
   vikunjaIntegrationId?: string;
   vikunjaFilter?: VikunjaScope;
   vikunjaProjectId?: number;
   vikunjaLabelId?: number;
   vikunjaDefaultProjectId?: number;
   vikunjaShowCompleted?: boolean;
-  // Calendar widget settings
   events?: CalendarEvent[];
   icalUrl?: string;
   calendarFeeds?: CalendarFeed[];
@@ -223,6 +232,7 @@ export interface NodeSettings {
 
 export interface Workspace {
   id: string;
+  user_id?: string;
   name: string;
   created_at: string;
   updated_at: string;

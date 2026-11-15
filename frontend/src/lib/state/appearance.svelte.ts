@@ -1,5 +1,6 @@
 import type { AppearancePreferences, WallpaperPreset } from "../types";
 import { APPEARANCE_STORAGE_KEY } from "./constants";
+import { apiFetch } from "./session.svelte";
 
 export class AppearanceController {
   isControlCenterOpen = $state<boolean>(false);
@@ -8,6 +9,13 @@ export class AppearanceController {
   reducedParallax = $state<boolean>(false);
 
   constructor() {
+    this.reloadFromLocal();
+  }
+
+  reloadFromLocal(): void {
+    this.wallpaperPreset = "cupertino";
+    this.showIconLabels = true;
+    this.reducedParallax = false;
     const appearanceRaw = localStorage.getItem(APPEARANCE_STORAGE_KEY);
     if (appearanceRaw) {
       try {
@@ -55,7 +63,7 @@ export class AppearanceController {
 
   private persist(): void {
     this.persistLocal();
-    void fetch("/api/v1/preferences/appearance", {
+    void apiFetch("/api/v1/preferences/appearance", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

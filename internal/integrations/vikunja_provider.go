@@ -13,6 +13,7 @@ import (
 	"homie/internal/models"
 	"homie/internal/state"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -48,6 +49,7 @@ type VikunjaAccountSignal struct {
 }
 
 type vikunjaAccountState struct {
+	ownerID  uuid.UUID
 	status   VikunjaStatusSignal
 	projects []VikunjaProject
 	labels   []VikunjaLabel
@@ -85,15 +87,19 @@ func (a *vikunjaAccountState) toSignal() VikunjaAccountSignal {
 	}
 }
 
+type userVikunjaBucket struct {
+	accounts map[string]*vikunjaAccountState
+	order    []string
+}
+
 type VikunjaProvider struct {
 	db        *gorm.DB
 	engine    *state.Engine
 	cipher    *crypto.EnvelopeCipher
 	triggerCh chan struct{}
 
-	mu       sync.RWMutex
-	accounts map[string]*vikunjaAccountState
-	order    []string
+	mu    sync.RWMutex
+	users map[uuid.UUID]*userVikunjaBucket
 }
 
 func NewVikunjaProvider(db *gorm.DB, engine *state.Engine, cipher *crypto.EnvelopeCipher) *VikunjaProvider {
@@ -102,7 +108,7 @@ func NewVikunjaProvider(db *gorm.DB, engine *state.Engine, cipher *crypto.Envelo
 		engine:    engine,
 		cipher:    cipher,
 		triggerCh: make(chan struct{}, 1),
-		accounts:  make(map[string]*vikunjaAccountState),
+		users:     make(map[uuid.UUID]*userVikunjaBucket),
 	}
 }
 
@@ -131,15 +137,6 @@ func (p *VikunjaProvider) TriggerSync() {
 
 func (p *VikunjaProvider) Teardown(_ context.Context) error { return nil }
 
-func (p *VikunjaProvider) ClearState(ctx context.Context) {
-	p.mu.Lock()
-	p.accounts = make(map[string]*vikunjaAccountState)
-	p.order = nil
-	p.mu.Unlock()
-
-	p.emitAll(ctx, p.engine, nil)
-}
-
 func (p *VikunjaProvider) decryptRow(row models.Integration) (VikunjaCredentials, error) {
 	plain, err := p.cipher.Decrypt(row.Credentials)
 	if err != nil {
@@ -162,21 +159,23 @@ func (p *VikunjaProvider) decryptRow(row models.Integration) (VikunjaCredentials
 	return creds, nil
 }
 
-func (p *VikunjaProvider) loadClientByID(ctx context.Context, integrationID string, taskIDHint int64) (*VikunjaClient, VikunjaCredentials, string, error) {
+func (p *VikunjaProvider) loadClientByID(ctx context.Context, userID uuid.UUID, integrationID string, taskIDHint int64) (*VikunjaClient, VikunjaCredentials, string, error) {
 	id := strings.TrimSpace(integrationID)
 	if id == "" && taskIDHint > 0 {
 		p.mu.RLock()
-		for _, acctID := range p.order {
-			if acct, ok := p.accounts[acctID]; ok {
-				for _, t := range acct.tasks {
-					if t.ID == taskIDHint {
-						id = acctID
-						break
+		if bucket, ok := p.users[userID]; ok {
+			for _, acctID := range bucket.order {
+				if acct, exists := bucket.accounts[acctID]; exists {
+					for _, t := range acct.tasks {
+						if t.ID == taskIDHint {
+							id = acctID
+							break
+						}
 					}
 				}
-			}
-			if id != "" {
-				break
+				if id != "" {
+					break
+				}
 			}
 		}
 		p.mu.RUnlock()
@@ -185,9 +184,14 @@ func (p *VikunjaProvider) loadClientByID(ctx context.Context, integrationID stri
 	var row models.Integration
 	var err error
 	if id != "" {
-		err = p.db.WithContext(ctx).Where("id = ? AND provider = ?", id, "vikunja").First(&row).Error
+		err = p.db.WithContext(ctx).
+			Where("id = ? AND user_id = ? AND provider = ?", id, userID, "vikunja").
+			First(&row).Error
 	} else {
-		err = p.db.WithContext(ctx).Where("provider = ?", "vikunja").Order("created_at ASC").First(&row).Error
+		err = p.db.WithContext(ctx).
+			Where("user_id = ? AND provider = ?", userID, "vikunja").
+			Order("created_at ASC").
+			First(&row).Error
 	}
 	if err != nil {
 		return nil, VikunjaCredentials{}, "", err
@@ -201,22 +205,26 @@ func (p *VikunjaProvider) loadClientByID(ctx context.Context, integrationID stri
 	return NewVikunjaClient(creds.ServerURL, creds.APIToken), creds, row.ID.String(), nil
 }
 
-func (p *VikunjaProvider) SyncNow(ctx context.Context, integrationID string) VikunjaAccountSignal {
-	_ = p.Poll(ctx, p.engine)
+func (p *VikunjaProvider) SyncNow(ctx context.Context, userID uuid.UUID, integrationID string) VikunjaAccountSignal {
+	p.pollUserRows(ctx, userID, p.engine)
 
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	if integrationID != "" {
-		if acct, ok := p.accounts[integrationID]; ok {
-			return acct.toSignal()
+	bucket, ok := p.users[userID]
+	if ok {
+		if integrationID != "" {
+			if acct, exists := bucket.accounts[integrationID]; exists {
+				return acct.toSignal()
+			}
+		}
+		if len(bucket.order) > 0 {
+			if acct, exists := bucket.accounts[bucket.order[0]]; exists {
+				return acct.toSignal()
+			}
 		}
 	}
-	if len(p.order) > 0 {
-		if acct, ok := p.accounts[p.order[0]]; ok {
-			return acct.toSignal()
-		}
-	}
+
 	return VikunjaAccountSignal{
 		Connected: false,
 		Projects:  []VikunjaProject{},
@@ -234,19 +242,66 @@ func (p *VikunjaProvider) Poll(ctx context.Context, emitter SignalEmitter) error
 		return err
 	}
 
-	if len(rows) == 0 {
-		p.mu.Lock()
-		p.accounts = make(map[string]*vikunjaAccountState)
-		p.order = nil
-		p.mu.Unlock()
-		p.emitAll(ctx, emitter, nil)
-		return nil
+	byUser := make(map[uuid.UUID][]models.Integration)
+	for _, r := range rows {
+		byUser[r.UserID] = append(byUser[r.UserID], r)
 	}
 
 	p.mu.RLock()
-	prevAccounts := make(map[string]*vikunjaAccountState, len(p.accounts))
-	for k, v := range p.accounts {
-		prevAccounts[k] = v
+	staleUsers := make([]uuid.UUID, 0)
+	for uid := range p.users {
+		if _, active := byUser[uid]; !active {
+			staleUsers = append(staleUsers, uid)
+		}
+	}
+	p.mu.RUnlock()
+
+	for _, uid := range staleUsers {
+		p.mu.Lock()
+		delete(p.users, uid)
+		p.mu.Unlock()
+		p.emitForUser(ctx, emitter, uid, nil)
+	}
+
+	var wg sync.WaitGroup
+	for uid, userRows := range byUser {
+		wg.Add(1)
+		go func(u uuid.UUID, list []models.Integration) {
+			defer wg.Done()
+			p.pollUserIntegrationList(ctx, u, list, emitter)
+		}(uid, userRows)
+	}
+	wg.Wait()
+	return nil
+}
+
+func (p *VikunjaProvider) pollUserRows(ctx context.Context, userID uuid.UUID, emitter SignalEmitter) {
+	var rows []models.Integration
+	if err := p.db.WithContext(ctx).
+		Where("user_id = ? AND provider = ?", userID, "vikunja").
+		Order("created_at ASC").
+		Find(&rows).Error; err != nil {
+		return
+	}
+	p.pollUserIntegrationList(ctx, userID, rows, emitter)
+}
+
+func (p *VikunjaProvider) pollUserIntegrationList(ctx context.Context, userID uuid.UUID, rows []models.Integration, emitter SignalEmitter) {
+	if len(rows) == 0 {
+		p.mu.Lock()
+		delete(p.users, userID)
+		p.mu.Unlock()
+		p.emitForUser(ctx, emitter, userID, nil)
+		return
+	}
+
+	p.mu.RLock()
+	var prevMap map[string]*vikunjaAccountState
+	if bucket, ok := p.users[userID]; ok {
+		prevMap = make(map[string]*vikunjaAccountState, len(bucket.accounts))
+		for k, v := range bucket.accounts {
+			prevMap[k] = v
+		}
 	}
 	p.mu.RUnlock()
 
@@ -257,14 +312,19 @@ func (p *VikunjaProvider) Poll(ctx context.Context, emitter SignalEmitter) error
 		pollWG.Add(1)
 		go func(i int, r models.Integration) {
 			defer pollWG.Done()
-			idStr := r.ID.String()
-			results[i] = p.pollSingleIntegration(ctx, r, prevAccounts[idStr])
+			var prev *vikunjaAccountState
+			if prevMap != nil {
+				prev = prevMap[r.ID.String()]
+			}
+			results[i] = p.pollSingleIntegration(ctx, r, prev)
 		}(idx, row)
 	}
 	pollWG.Wait()
 
-	newMap := make(map[string]*vikunjaAccountState, len(rows))
-	newOrder := make([]string, 0, len(rows))
+	newBucket := &userVikunjaBucket{
+		accounts: make(map[string]*vikunjaAccountState, len(rows)),
+		order:    make([]string, 0, len(rows)),
+	}
 	signals := make([]VikunjaAccountSignal, 0, len(rows))
 
 	for _, st := range results {
@@ -272,18 +332,16 @@ func (p *VikunjaProvider) Poll(ctx context.Context, emitter SignalEmitter) error
 			continue
 		}
 		id := st.status.IntegrationID
-		newMap[id] = st
-		newOrder = append(newOrder, id)
+		newBucket.accounts[id] = st
+		newBucket.order = append(newBucket.order, id)
 		signals = append(signals, st.toSignal())
 	}
 
 	p.mu.Lock()
-	p.accounts = newMap
-	p.order = newOrder
+	p.users[userID] = newBucket
 	p.mu.Unlock()
 
-	p.emitAll(ctx, emitter, signals)
-	return nil
+	p.emitForUser(ctx, emitter, userID, signals)
 }
 
 func (p *VikunjaProvider) pollSingleIntegration(
@@ -296,6 +354,7 @@ func (p *VikunjaProvider) pollSingleIntegration(
 	if err != nil {
 		slog.Warn("Failed decrypting Vikunja integration", "integration_id", idStr, "error", err)
 		return &vikunjaAccountState{
+			ownerID: row.UserID,
 			status: VikunjaStatusSignal{
 				Connected:     true,
 				IntegrationID: idStr,
@@ -361,6 +420,7 @@ func (p *VikunjaProvider) pollSingleIntegration(
 		slog.Warn("Vikunja poll error", "integration_id", idStr, "error", errMsg)
 
 		out := &vikunjaAccountState{
+			ownerID: row.UserID,
 			status: VikunjaStatusSignal{
 				Connected:     true,
 				IntegrationID: idStr,
@@ -417,6 +477,7 @@ func (p *VikunjaProvider) pollSingleIntegration(
 	}
 
 	return &vikunjaAccountState{
+		ownerID: row.UserID,
 		status: VikunjaStatusSignal{
 			Connected:     true,
 			IntegrationID: idStr,
@@ -435,36 +496,39 @@ func (p *VikunjaProvider) pollSingleIntegration(
 	}
 }
 
-func (p *VikunjaProvider) snapshotSignalsLocked() []VikunjaAccountSignal {
-	out := make([]VikunjaAccountSignal, 0, len(p.order))
-	for _, id := range p.order {
-		if acct, ok := p.accounts[id]; ok {
+func (p *VikunjaProvider) snapshotSignalsForUserLocked(userID uuid.UUID) []VikunjaAccountSignal {
+	bucket, ok := p.users[userID]
+	if !ok {
+		return []VikunjaAccountSignal{}
+	}
+	out := make([]VikunjaAccountSignal, 0, len(bucket.order))
+	for _, id := range bucket.order {
+		if acct, exists := bucket.accounts[id]; exists {
 			out = append(out, acct.toSignal())
 		}
 	}
 	return out
 }
 
-func (p *VikunjaProvider) emitAll(ctx context.Context, emitter SignalEmitter, signals []VikunjaAccountSignal) {
+func (p *VikunjaProvider) emitForUser(ctx context.Context, emitter SignalEmitter, userID uuid.UUID, signals []VikunjaAccountSignal) {
 	if signals == nil {
 		signals = []VikunjaAccountSignal{}
 	}
-	emitter.EmitSignal(ctx, "vikunja:accounts", signals)
+	emitter.EmitUserSignal(ctx, userID, "vikunja:accounts", signals)
 
-	// Maintain legacy single-account signals for primary account compatibility
 	if len(signals) == 0 {
-		emitter.EmitSignal(ctx, "vikunja:status", VikunjaStatusSignal{Connected: false})
-		emitter.EmitSignal(ctx, "vikunja:projects", []VikunjaProject{})
-		emitter.EmitSignal(ctx, "vikunja:labels", []VikunjaLabel{})
-		emitter.EmitSignal(ctx, "vikunja:tasks", []VikunjaTask{})
+		emitter.EmitUserSignal(ctx, userID, "vikunja:status", VikunjaStatusSignal{Connected: false})
+		emitter.EmitUserSignal(ctx, userID, "vikunja:projects", []VikunjaProject{})
+		emitter.EmitUserSignal(ctx, userID, "vikunja:labels", []VikunjaLabel{})
+		emitter.EmitUserSignal(ctx, userID, "vikunja:tasks", []VikunjaTask{})
 		return
 	}
 
 	primary := signals[0]
-	emitter.EmitSignal(ctx, "vikunja:projects", primary.Projects)
-	emitter.EmitSignal(ctx, "vikunja:labels", primary.Labels)
-	emitter.EmitSignal(ctx, "vikunja:tasks", primary.Tasks)
-	emitter.EmitSignal(ctx, "vikunja:status", VikunjaStatusSignal{
+	emitter.EmitUserSignal(ctx, userID, "vikunja:projects", primary.Projects)
+	emitter.EmitUserSignal(ctx, userID, "vikunja:labels", primary.Labels)
+	emitter.EmitUserSignal(ctx, userID, "vikunja:tasks", primary.Tasks)
+	emitter.EmitUserSignal(ctx, userID, "vikunja:status", VikunjaStatusSignal{
 		Connected:     primary.Connected,
 		IntegrationID: primary.IntegrationID,
 		Label:         primary.Label,
@@ -479,18 +543,15 @@ func (p *VikunjaProvider) emitAll(ctx context.Context, emitter SignalEmitter, si
 	})
 }
 
-// =========================================================================
-// Fast Write-Through Mutations (Execute on Vikunja + Immediately Emit SSE)
-// =========================================================================
-
 func (p *VikunjaProvider) CreateTask(
 	ctx context.Context,
+	userID uuid.UUID,
 	integrationID string,
 	projectID int64,
 	body VikunjaTaskCreate,
 	labelIDs []int64,
 ) (*VikunjaTask, error) {
-	client, creds, resolvedID, err := p.loadClientByID(ctx, integrationID, 0)
+	client, creds, resolvedID, err := p.loadClientByID(ctx, userID, integrationID, 0)
 	if err != nil {
 		return nil, fmt.Errorf("vikunja integration not connected")
 	}
@@ -515,12 +576,12 @@ func (p *VikunjaProvider) CreateTask(
 	}
 	norm := normalizeVikunjaTask(*created, frontend)
 
-	p.upsertCachedTask(ctx, resolvedID, creds, norm)
+	p.upsertCachedTask(ctx, userID, resolvedID, creds, norm)
 	return &norm, nil
 }
 
-func (p *VikunjaProvider) PatchTask(ctx context.Context, integrationID string, taskID int64, patch VikunjaTaskPatch) (*VikunjaTask, error) {
-	client, creds, resolvedID, err := p.loadClientByID(ctx, integrationID, taskID)
+func (p *VikunjaProvider) PatchTask(ctx context.Context, userID uuid.UUID, integrationID string, taskID int64, patch VikunjaTaskPatch) (*VikunjaTask, error) {
+	client, creds, resolvedID, err := p.loadClientByID(ctx, userID, integrationID, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("vikunja integration not connected")
 	}
@@ -540,12 +601,12 @@ func (p *VikunjaProvider) PatchTask(ctx context.Context, integrationID string, t
 	}
 	norm := normalizeVikunjaTask(*updated, frontend)
 
-	p.upsertCachedTask(ctx, resolvedID, creds, norm)
+	p.upsertCachedTask(ctx, userID, resolvedID, creds, norm)
 	return &norm, nil
 }
 
-func (p *VikunjaProvider) DeleteTask(ctx context.Context, integrationID string, taskID int64) error {
-	client, _, resolvedID, err := p.loadClientByID(ctx, integrationID, taskID)
+func (p *VikunjaProvider) DeleteTask(ctx context.Context, userID uuid.UUID, integrationID string, taskID int64) error {
+	client, _, resolvedID, err := p.loadClientByID(ctx, userID, integrationID, taskID)
 	if err != nil {
 		return fmt.Errorf("vikunja integration not connected")
 	}
@@ -554,30 +615,32 @@ func (p *VikunjaProvider) DeleteTask(ctx context.Context, integrationID string, 
 	}
 
 	p.mu.Lock()
-	if acct, ok := p.accounts[resolvedID]; ok {
-		filtered := make([]VikunjaTask, 0, len(acct.tasks))
-		openCount := 0
-		for _, t := range acct.tasks {
-			if t.ID == taskID {
-				continue
+	if bucket, ok := p.users[userID]; ok {
+		if acct, exists := bucket.accounts[resolvedID]; exists {
+			filtered := make([]VikunjaTask, 0, len(acct.tasks))
+			openCount := 0
+			for _, t := range acct.tasks {
+				if t.ID == taskID {
+					continue
+				}
+				if !t.Done {
+					openCount++
+				}
+				filtered = append(filtered, t)
 			}
-			if !t.Done {
-				openCount++
-			}
-			filtered = append(filtered, t)
+			acct.tasks = filtered
+			acct.status.TaskCount = openCount
 		}
-		acct.tasks = filtered
-		acct.status.TaskCount = openCount
 	}
-	signals := p.snapshotSignalsLocked()
+	signals := p.snapshotSignalsForUserLocked(userID)
 	p.mu.Unlock()
 
-	p.emitAll(ctx, p.engine, signals)
+	p.emitForUser(ctx, p.engine, userID, signals)
 	return nil
 }
 
-func (p *VikunjaProvider) SetTaskLabel(ctx context.Context, integrationID string, taskID, labelID int64, attach bool) (*VikunjaTask, error) {
-	client, creds, resolvedID, err := p.loadClientByID(ctx, integrationID, taskID)
+func (p *VikunjaProvider) SetTaskLabel(ctx context.Context, userID uuid.UUID, integrationID string, taskID, labelID int64, attach bool) (*VikunjaTask, error) {
+	client, creds, resolvedID, err := p.loadClientByID(ctx, userID, integrationID, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("vikunja integration not connected")
 	}
@@ -600,31 +663,39 @@ func (p *VikunjaProvider) SetTaskLabel(ctx context.Context, integrationID string
 		frontend = creds.ServerURL
 	}
 	norm := normalizeVikunjaTask(*full, frontend)
-	p.upsertCachedTask(ctx, resolvedID, creds, norm)
+	p.upsertCachedTask(ctx, userID, resolvedID, creds, norm)
 	return &norm, nil
 }
 
-func (p *VikunjaProvider) ListTaskComments(ctx context.Context, integrationID string, taskID int64) ([]VikunjaComment, error) {
-	client, _, _, err := p.loadClientByID(ctx, integrationID, taskID)
+func (p *VikunjaProvider) ListTaskComments(ctx context.Context, userID uuid.UUID, integrationID string, taskID int64) ([]VikunjaComment, error) {
+	client, _, _, err := p.loadClientByID(ctx, userID, integrationID, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("vikunja integration not connected")
 	}
 	return client.ListTaskComments(ctx, taskID)
 }
 
-func (p *VikunjaProvider) AddTaskComment(ctx context.Context, integrationID string, taskID int64, comment string) (*VikunjaComment, error) {
-	client, _, _, err := p.loadClientByID(ctx, integrationID, taskID)
+func (p *VikunjaProvider) AddTaskComment(ctx context.Context, userID uuid.UUID, integrationID string, taskID int64, comment string) (*VikunjaComment, error) {
+	client, _, _, err := p.loadClientByID(ctx, userID, integrationID, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("vikunja integration not connected")
 	}
 	return client.AddTaskComment(ctx, taskID, comment)
 }
 
-func (p *VikunjaProvider) upsertCachedTask(ctx context.Context, integrationID string, creds VikunjaCredentials, norm VikunjaTask) {
+func (p *VikunjaProvider) upsertCachedTask(ctx context.Context, userID uuid.UUID, integrationID string, creds VikunjaCredentials, norm VikunjaTask) {
 	p.mu.Lock()
-	acct, ok := p.accounts[integrationID]
+	bucket, ok := p.users[userID]
 	if !ok {
+		bucket = &userVikunjaBucket{
+			accounts: make(map[string]*vikunjaAccountState),
+		}
+		p.users[userID] = bucket
+	}
+	acct, exists := bucket.accounts[integrationID]
+	if !exists {
 		acct = &vikunjaAccountState{
+			ownerID: userID,
 			status: VikunjaStatusSignal{
 				Connected:     true,
 				IntegrationID: integrationID,
@@ -638,8 +709,8 @@ func (p *VikunjaProvider) upsertCachedTask(ctx context.Context, integrationID st
 			labels:   []VikunjaLabel{},
 			tasks:    []VikunjaTask{},
 		}
-		p.accounts[integrationID] = acct
-		p.order = append(p.order, integrationID)
+		bucket.accounts[integrationID] = acct
+		bucket.order = append(bucket.order, integrationID)
 	}
 
 	replaced := false
@@ -660,8 +731,8 @@ func (p *VikunjaProvider) upsertCachedTask(ctx context.Context, integrationID st
 		}
 	}
 	acct.status.TaskCount = openCount
-	signals := p.snapshotSignalsLocked()
+	signals := p.snapshotSignalsForUserLocked(userID)
 	p.mu.Unlock()
 
-	p.emitAll(ctx, p.engine, signals)
+	p.emitForUser(ctx, p.engine, userID, signals)
 }

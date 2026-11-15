@@ -12,7 +12,7 @@ import {
 import { computeGridReflow, executeNodeMerge } from "./drag-engine";
 import { clampToGrid, snapToWidgetPreset } from "./grid-math";
 import type { OverlayController } from "./overlays.svelte";
-import type { SessionStore } from "./session.svelte";
+import { apiFetch, type SessionStore } from "./session.svelte";
 import type { SmartStackController } from "./stacks.svelte";
 
 export class DragController {
@@ -360,8 +360,6 @@ export class DragController {
     const cols = this.session.activeGridCols;
     const activeWsId = this.session.activeWorkspace?.id;
 
-    // On <16 column breakpoints (8-col tablet / 4-col mobile), persist breakpoint-specific layout
-    // overrides inside `node.settings.layouts[cols]` so the 16-col desktop layout stays untouched.
     if (cols < GRID_COLS) {
       const colKey = String(cols);
       const patches: { id: string; settings: DashboardNode["settings"] }[] = [];
@@ -400,7 +398,7 @@ export class DragController {
       this.session.persistSnapshot();
 
       for (const p of patches) {
-        void fetch(`/api/v1/nodes/${p.id}`, {
+        void apiFetch(`/api/v1/nodes/${p.id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ settings: p.settings }),
@@ -409,7 +407,6 @@ export class DragController {
       return;
     }
 
-    // Standard 16-column desktop persistence
     const updates: {
       id: string;
       sort_order: number;
@@ -446,7 +443,7 @@ export class DragController {
       node.sort_order = nextSortOrder;
 
       if (wsChanged && activeWsId) {
-        void fetch(`/api/v1/nodes/${node.id}`, {
+        void apiFetch(`/api/v1/nodes/${node.id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -476,7 +473,7 @@ export class DragController {
     this.session.persistSnapshot();
 
     if (updates.length > 0) {
-      void fetch("/api/v1/nodes/reorder", {
+      void apiFetch("/api/v1/nodes/reorder", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(updates),
@@ -494,7 +491,7 @@ export class DragController {
     node.sort_order = this.session.dockNodes.length + 1;
     this.session.persistSnapshot();
 
-    void fetch("/api/v1/nodes/reorder", {
+    void apiFetch("/api/v1/nodes/reorder", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify([
@@ -644,7 +641,7 @@ export class DragController {
       }
       this.session.persistSnapshot();
 
-      void fetch("/api/v1/nodes/reorder", {
+      void apiFetch("/api/v1/nodes/reorder", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(updates),
@@ -681,7 +678,7 @@ export class DragController {
       }
       this.session.persistSnapshot();
 
-      void fetch("/api/v1/nodes/reorder", {
+      void apiFetch("/api/v1/nodes/reorder", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(updates),
@@ -721,7 +718,7 @@ export class DragController {
       }
       this.session.persistSnapshot();
 
-      void fetch("/api/v1/nodes/reorder", {
+      void apiFetch("/api/v1/nodes/reorder", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(updates),

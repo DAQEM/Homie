@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"homie/internal/api"
+	"homie/internal/auth"
 	"homie/internal/crypto"
 	"homie/internal/database"
 	"homie/internal/integrations"
@@ -63,14 +64,34 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 3. Initialize Lock-Free State Engine & build initial Brotli snapshot
+	// 3. Initialize Per-User State Engine & Auth Session Manager
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	authCfg := auth.LoadConfigFromEnv(masterKey)
+	oidcClient := auth.NewOIDCClient(authCfg)
+	sessionMgr := auth.NewSessionManager(db, envelopeCipher, authCfg, oidcClient)
+	sessionMgr.StartCleanupLoop(ctx)
+
+	if authCfg.Enabled {
+		slog.Info("OIDC authentication enabled", "provider", authCfg.ProviderName, "issuer", authCfg.IssuerURL)
+		go func() {
+			discCtx, discCancel := context.WithTimeout(ctx, 8*time.Second)
+			defer discCancel()
+			if _, err := oidcClient.GetDiscovery(discCtx); err != nil {
+				slog.Warn("Initial OIDC discovery deferred (will retry on first login)", "error", err)
+			}
+		}()
+	} else {
+		slog.Info("OIDC_ISSUER_URL not set; running in local single-user mode")
+	}
+
 	stateEngine := state.NewEngine(db)
-	if err := stateEngine.RebuildSnapshot(ctx); err != nil {
-		slog.Error("Failed to build initial state snapshot", "error", err)
-		os.Exit(1)
+	if !authCfg.Enabled {
+		if err := stateEngine.RebuildSnapshot(ctx, auth.LocalDefaultUserID); err != nil {
+			slog.Error("Failed to build initial local state snapshot", "error", err)
+			os.Exit(1)
+		}
 	}
 
 	// 4. Spawn supervised background integration workers
@@ -99,6 +120,8 @@ func main() {
 		db,
 		stateEngine,
 		envelopeCipher,
+		sessionMgr,
+		oidcClient,
 		calendarProvider,
 		vikunjaProvider,
 		healthProvider,

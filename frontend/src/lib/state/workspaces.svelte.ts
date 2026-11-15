@@ -5,7 +5,7 @@ import type { DragController } from "./drag-controller.svelte";
 import { canFitAmongNodes, findFreeSlotAmongNodes } from "./grid-math";
 import type { OverlayController } from "./overlays.svelte";
 import type { PagingController } from "./paging.svelte";
-import type { SessionStore } from "./session.svelte";
+import { apiFetch, type SessionStore } from "./session.svelte";
 
 function persistWorkspaceSelection(id: string): void {
   if (typeof sessionStorage !== "undefined") {
@@ -151,7 +151,7 @@ export class WorkspaceController {
     node.grid_y = nextY;
     this.session.persistSnapshot();
 
-    void fetch(`/api/v1/nodes/${node.id}`, {
+    void apiFetch(`/api/v1/nodes/${node.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -209,7 +209,7 @@ export class WorkspaceController {
     this.session.persistSnapshot();
     this.overlays.isWorkspaceModalOpen = false;
 
-    const res = await fetch("/api/v1/workspaces", {
+    const res = await apiFetch("/api/v1/workspaces", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: optimisticWs.id, name: trimmed }),
@@ -258,7 +258,7 @@ export class WorkspaceController {
     }
     this.session.persistSnapshot();
 
-    const res = await fetch(`/api/v1/workspaces/${id}`, {
+    const res = await apiFetch(`/api/v1/workspaces/${id}`, {
       method: "DELETE",
     });
 

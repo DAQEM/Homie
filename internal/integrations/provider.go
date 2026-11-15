@@ -7,11 +7,14 @@ import (
 	"time"
 
 	"homie/internal/state"
+
+	"github.com/google/uuid"
 )
 
 // SignalEmitter decouples integration providers from the underlying state engine.
 type SignalEmitter interface {
-	EmitSignal(ctx context.Context, key string, value any)
+	EmitGlobalSignal(ctx context.Context, key string, value any)
+	EmitUserSignal(ctx context.Context, userID uuid.UUID, key string, value any)
 }
 
 // IntegrationProvider defines the lifecycle contract for all external data producers.
@@ -23,7 +26,7 @@ type IntegrationProvider interface {
 }
 
 // SpawnSupervised runs an IntegrationProvider in an isolated background goroutine
-// with panic recovery and exponential backoff on error.
+// with panic recovery.
 func SpawnSupervised(ctx context.Context, provider IntegrationProvider, engine *state.Engine, interval time.Duration) {
 	go func() {
 		slog.Info("Starting supervised integration worker", "provider", provider.Name())
@@ -46,7 +49,6 @@ func SpawnSupervised(ctx context.Context, provider IntegrationProvider, engine *
 			}
 		}
 
-		// Execute initial poll immediately on startup
 		runPoll()
 
 		for {
@@ -61,7 +63,7 @@ func SpawnSupervised(ctx context.Context, provider IntegrationProvider, engine *
 	}()
 }
 
-// HelloWorldProvider is a built-in demonstration provider emitting system signals.
+// HelloWorldProvider is a built-in demonstration provider emitting global system signals.
 type HelloWorldProvider struct {
 	startedAt time.Time
 }
@@ -82,8 +84,8 @@ func (p *HelloWorldProvider) Poll(ctx context.Context, emitter SignalEmitter) er
 	now := time.Now().UTC().Format("15:04:05 UTC")
 	uptime := time.Since(p.startedAt).Round(time.Second).String()
 
-	emitter.EmitSignal(ctx, "system:hello:greeting", fmt.Sprintf("Go Signal Bus Online • %s", now))
-	emitter.EmitSignal(ctx, "system:hello:uptime", fmt.Sprintf("Up %s", uptime))
+	emitter.EmitGlobalSignal(ctx, "system:hello:greeting", fmt.Sprintf("Go Signal Bus Online • %s", now))
+	emitter.EmitGlobalSignal(ctx, "system:hello:uptime", fmt.Sprintf("Up %s", uptime))
 	return nil
 }
 

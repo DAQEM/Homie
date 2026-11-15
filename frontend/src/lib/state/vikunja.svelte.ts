@@ -7,7 +7,7 @@ import type {
   VikunjaStatus,
   VikunjaTask,
 } from "../types";
-import type { SessionStore } from "./session.svelte";
+import { apiFetch, type SessionStore } from "./session.svelte";
 
 export const VIKUNJA_ZERO_DATE = "0001-01-01T00:00:00Z";
 
@@ -212,9 +212,6 @@ export class VikunjaController {
     });
   }
 
-  /**
-   * Parses natural inline syntax: `!`, `!!`, `!!!`, `#project`, `today`, `tomorrow`.
-   */
   parseQuickInput(
     rawInput: string,
     fallbackProjectId: number,
@@ -337,7 +334,7 @@ export class VikunjaController {
   }): Promise<{ error: string | null; account?: VikunjaAccount }> {
     this.isConnecting = true;
     try {
-      const res = await fetch("/api/v1/integrations/vikunja/auth", {
+      const res = await apiFetch("/api/v1/integrations/vikunja/auth", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ credentials: payload }),
@@ -361,7 +358,7 @@ export class VikunjaController {
   async disconnect(integrationId?: string | null): Promise<void> {
     const id = this.resolveIntegrationId(integrationId);
     if (!id) return;
-    await fetch(`/api/v1/integrations/${id}`, { method: "DELETE" });
+    await apiFetch(`/api/v1/integrations/${id}`, { method: "DELETE" });
 
     const remaining = this.accounts.filter((a) => a.integrationId !== id);
     this.session.signals["vikunja:accounts"] = remaining;
@@ -387,7 +384,7 @@ export class VikunjaController {
       const url = integrationId
         ? `/api/v1/vikunja/sync?integration_id=${encodeURIComponent(integrationId)}`
         : "/api/v1/vikunja/sync";
-      const res = await fetch(url, { method: "POST" });
+      const res = await apiFetch(url, { method: "POST" });
       if (res.ok) {
         const acct = (await res.json()) as VikunjaAccount;
         if (acct.integrationId) {
@@ -433,7 +430,7 @@ export class VikunjaController {
     const prev = this.setAccountTasks(targetId, (tasks) => [optimistic, ...tasks]);
 
     try {
-      const res = await fetch("/api/v1/vikunja/tasks", {
+      const res = await apiFetch("/api/v1/vikunja/tasks", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...input, integration_id: targetId }),
@@ -483,7 +480,7 @@ export class VikunjaController {
     );
 
     try {
-      const res = await fetch(
+      const res = await apiFetch(
         this.withIntegrationQuery(`/api/v1/vikunja/tasks/${taskIDOrThrow(taskId)}`, targetId),
         {
           method: "PATCH",
@@ -509,7 +506,7 @@ export class VikunjaController {
     const prev = this.setAccountTasks(targetId, (tasks) => tasks.filter((t) => t.id !== taskId));
 
     try {
-      const res = await fetch(
+      const res = await apiFetch(
         this.withIntegrationQuery(`/api/v1/vikunja/tasks/${taskId}`, targetId),
         { method: "DELETE" },
       );
@@ -546,7 +543,7 @@ export class VikunjaController {
       const base = attach
         ? `/api/v1/vikunja/tasks/${taskId}/labels`
         : `/api/v1/vikunja/tasks/${taskId}/labels/${label.id}`;
-      const res = await fetch(this.withIntegrationQuery(base, targetId), {
+      const res = await apiFetch(this.withIntegrationQuery(base, targetId), {
         method: attach ? "POST" : "DELETE",
         headers: attach ? { "Content-Type": "application/json" } : undefined,
         body: attach ? JSON.stringify({ label_id: label.id }) : undefined,
@@ -560,7 +557,7 @@ export class VikunjaController {
   }
 
   async fetchComments(taskId: number, integrationId?: string | null): Promise<VikunjaComment[]> {
-    const res = await fetch(
+    const res = await apiFetch(
       this.withIntegrationQuery(`/api/v1/vikunja/tasks/${taskId}/comments`, integrationId),
     );
     if (!res.ok) return [];
@@ -573,7 +570,7 @@ export class VikunjaController {
     integrationId?: string | null,
   ): Promise<VikunjaComment | null> {
     const html = plainTextToTipTapHTML(plainText);
-    const res = await fetch(
+    const res = await apiFetch(
       this.withIntegrationQuery(`/api/v1/vikunja/tasks/${taskId}/comments`, integrationId),
       {
         method: "POST",
