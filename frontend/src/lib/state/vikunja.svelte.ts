@@ -1,5 +1,6 @@
 import type {
   DashboardNode,
+  VikunjaAccount,
   VikunjaComment,
   VikunjaLabel,
   VikunjaProject,
@@ -15,60 +16,147 @@ export class VikunjaController {
   isSyncing = $state(false);
   isConnecting = $state(false);
 
-  status = $derived.by<VikunjaStatus>(() => {
-    const raw = this.session.signals["vikunja:status"];
-    if (raw && typeof raw === "object" && "connected" in raw) {
-      return raw as VikunjaStatus;
+  accounts = $derived.by<VikunjaAccount[]>(() => {
+    const raw = this.session.signals["vikunja:accounts"];
+    if (Array.isArray(raw)) {
+      return raw as VikunjaAccount[];
     }
-    return { connected: false, taskCount: 0 };
+    const legacyStatus = this.session.signals["vikunja:status"] as VikunjaStatus | undefined;
+    if (legacyStatus?.connected && legacyStatus.integrationId) {
+      return [
+        {
+          ...legacyStatus,
+          projects: Array.isArray(this.session.signals["vikunja:projects"])
+            ? (this.session.signals["vikunja:projects"] as VikunjaProject[])
+            : [],
+          labels: Array.isArray(this.session.signals["vikunja:labels"])
+            ? (this.session.signals["vikunja:labels"] as VikunjaLabel[])
+            : [],
+          tasks: Array.isArray(this.session.signals["vikunja:tasks"])
+            ? (this.session.signals["vikunja:tasks"] as VikunjaTask[])
+            : [],
+        },
+      ];
+    }
+    return [];
   });
 
-  projects = $derived.by<VikunjaProject[]>(() => {
-    const raw = this.session.signals["vikunja:projects"];
-    return Array.isArray(raw) ? (raw as VikunjaProject[]) : [];
+  status = $derived.by<VikunjaStatus>(() => {
+    if (this.accounts.length === 0) {
+      return { connected: false, taskCount: 0 };
+    }
+    const primary = this.accounts[0];
+    const totalTasks = this.accounts.reduce((acc, a) => acc + (a.taskCount || 0), 0);
+    return {
+      connected: this.accounts.some((a) => a.connected),
+      integrationId: primary.integrationId,
+      label: primary.label,
+      serverUrl: primary.serverUrl,
+      frontendUrl: primary.frontendUrl,
+      username: primary.username,
+      userId: primary.userId,
+      version: primary.version,
+      lastSyncedAt: primary.lastSyncedAt,
+      taskCount: totalTasks,
+      error: this.accounts.find((a) => a.error)?.error,
+    };
   });
 
-  writableProjects = $derived<VikunjaProject[]>(
-    this.projects.filter((p) => p.id > 0 && !p.is_archived),
-  );
+  projects = $derived<VikunjaProject[]>(this.accounts[0]?.projects ?? []);
 
-  labels = $derived.by<VikunjaLabel[]>(() => {
-    const raw = this.session.signals["vikunja:labels"];
-    return Array.isArray(raw) ? (raw as VikunjaLabel[]) : [];
-  });
+  writableProjects = $derived<VikunjaProject[]>(this.getWritableProjects());
 
-  tasks = $derived.by<VikunjaTask[]>(() => {
-    const raw = this.session.signals["vikunja:tasks"];
-    return Array.isArray(raw) ? (raw as VikunjaTask[]) : [];
+  labels = $derived<VikunjaLabel[]>(this.accounts[0]?.labels ?? []);
+
+  tasks = $derived<VikunjaTask[]>(this.accounts[0]?.tasks ?? []);
+
+  allTasks = $derived.by<{ account: VikunjaAccount; task: VikunjaTask }[]>(() => {
+    const list: { account: VikunjaAccount; task: VikunjaTask }[] = [];
+    for (const account of this.accounts) {
+      for (const task of account.tasks ?? []) {
+        list.push({ account, task });
+      }
+    }
+    return list;
   });
 
   constructor(session: SessionStore) {
     this.session = session;
   }
 
-  getProjectById(id: number): VikunjaProject | undefined {
-    return this.projects.find((p) => p.id === id);
+  getAccountById(integrationId?: string | null): VikunjaAccount | null {
+    if (integrationId) {
+      return this.accounts.find((a) => a.integrationId === integrationId) ?? null;
+    }
+    return this.accounts[0] ?? null;
   }
 
-  formatTaskIdentifier(task: VikunjaTask): string {
+  getAccountForNode(node?: DashboardNode | null): VikunjaAccount | null {
+    const requestedId = node?.settings?.vikunjaIntegrationId;
+    if (requestedId) {
+      return this.accounts.find((a) => a.integrationId === requestedId) ?? null;
+    }
+    return this.accounts[0] ?? null;
+  }
+
+  getProjects(integrationId?: string | null): VikunjaProject[] {
+    return this.getAccountById(integrationId)?.projects ?? [];
+  }
+
+  getWritableProjects(integrationId?: string | null): VikunjaProject[] {
+    return this.getProjects(integrationId).filter((p) => p.id > 0 && !p.is_archived);
+  }
+
+  getLabels(integrationId?: string | null): VikunjaLabel[] {
+    return this.getAccountById(integrationId)?.labels ?? [];
+  }
+
+  getTasks(integrationId?: string | null): VikunjaTask[] {
+    return this.getAccountById(integrationId)?.tasks ?? [];
+  }
+
+  findTask(taskId: number | null, integrationId?: string | null): VikunjaTask | null {
+    if (taskId === null) return null;
+    if (integrationId) {
+      return this.getAccountById(integrationId)?.tasks.find((t) => t.id === taskId) ?? null;
+    }
+    for (const acct of this.accounts) {
+      const found = acct.tasks.find((t) => t.id === taskId);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  getProjectById(id: number, integrationId?: string | null): VikunjaProject | undefined {
+    return this.getProjects(integrationId).find((p) => p.id === id);
+  }
+
+  formatTaskIdentifier(task: VikunjaTask, integrationId?: string | null): string {
     if (task.identifier) return task.identifier;
-    const proj = this.getProjectById(task.project_id);
+    const proj = this.getProjectById(task.project_id, integrationId);
     if (proj?.identifier) return `${proj.identifier}-${task.index}`;
     return `#${task.index || task.id}`;
   }
 
   getDefaultProjectId(node?: DashboardNode): number {
-    if (node?.settings?.vikunjaDefaultProjectId && node.settings.vikunjaDefaultProjectId > 0) {
+    const acct = this.getAccountForNode(node);
+    const integrationId = acct?.integrationId;
+    const writable = this.getWritableProjects(integrationId);
+
+    if (
+      node?.settings?.vikunjaDefaultProjectId &&
+      writable.some((p) => p.id === node.settings?.vikunjaDefaultProjectId)
+    ) {
       return node.settings.vikunjaDefaultProjectId;
     }
     if (
       node?.settings?.vikunjaFilter === "project" &&
       node.settings.vikunjaProjectId &&
-      node.settings.vikunjaProjectId > 0
+      writable.some((p) => p.id === node.settings?.vikunjaProjectId)
     ) {
       return node.settings.vikunjaProjectId;
     }
-    return this.writableProjects[0]?.id ?? 0;
+    return writable[0]?.id ?? 0;
   }
 
   getTasksForNode(node: DashboardNode): VikunjaTask[] {
@@ -76,12 +164,15 @@ export class VikunjaController {
       return SAMPLE_PREVIEW_TASKS;
     }
 
+    const acct = this.getAccountForNode(node);
+    if (!acct) return [];
+
     const scope = node.settings?.vikunjaFilter ?? "all";
     const now = this.session.now;
     const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
     const inSevenDays = new Date(endOfToday.getTime() + 7 * 86400 * 1000);
 
-    const filtered = this.tasks.filter((t) => {
+    const filtered = (acct.tasks ?? []).filter((t) => {
       switch (scope) {
         case "today": {
           if (!t.due_date) return false;
@@ -127,6 +218,7 @@ export class VikunjaController {
   parseQuickInput(
     rawInput: string,
     fallbackProjectId: number,
+    integrationId?: string | null,
   ): {
     title: string;
     priority: number;
@@ -138,7 +230,6 @@ export class VikunjaController {
     let projectId = fallbackProjectId;
     let dueDate = "";
 
-    // Priority bangs (!=2 medium, !!=3 high, !!!=4 urgent)
     if (/(^|\s)!!!(\s|$)/.test(text)) {
       priority = 4;
       text = text.replace(/(^|\s)!!!(?=\s|$)/g, " ");
@@ -150,7 +241,6 @@ export class VikunjaController {
       text = text.replace(/(^|\s)!(?=\s|$)|!$/g, " ");
     }
 
-    // Due date shortcuts
     const now = this.session.now;
     if (/\b(today|@today)\b/i.test(text)) {
       const d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 18, 0, 0);
@@ -162,11 +252,10 @@ export class VikunjaController {
       text = text.replace(/\b(tomorrow|@tomorrow)\b/gi, " ");
     }
 
-    // #project or +project matching
     const projMatch = text.match(/(?:^|\s)[#+]([a-zA-Z0-9_-]+)/);
     if (projMatch) {
       const needle = projMatch[1].toLowerCase();
-      const matched = this.writableProjects.find(
+      const matched = this.getWritableProjects(integrationId).find(
         (p) =>
           p.title.toLowerCase() === needle ||
           p.title.toLowerCase().startsWith(needle) ||
@@ -186,13 +275,66 @@ export class VikunjaController {
     };
   }
 
+  private resolveIntegrationId(integrationId?: string | null): string | undefined {
+    return integrationId || this.accounts[0]?.integrationId;
+  }
+
+  private withIntegrationQuery(path: string, integrationId?: string | null): string {
+    const targetId = this.resolveIntegrationId(integrationId);
+    if (!targetId) return path;
+    const sep = path.includes("?") ? "&" : "?";
+    return `${path}${sep}integration_id=${encodeURIComponent(targetId)}`;
+  }
+
+  private setAccountTasks(
+    integrationId: string,
+    updater: (tasks: VikunjaTask[]) => VikunjaTask[],
+  ): VikunjaAccount[] {
+    const prev = this.accounts;
+    const next = prev.map((acct) => {
+      if (acct.integrationId !== integrationId) return acct;
+      const nextTasks = updater(acct.tasks ?? []);
+      return {
+        ...acct,
+        tasks: nextTasks,
+        taskCount: nextTasks.filter((t) => !t.done).length,
+      };
+    });
+    this.session.signals["vikunja:accounts"] = next;
+    if (next[0]?.integrationId === integrationId) {
+      this.session.signals["vikunja:tasks"] = next[0].tasks;
+    }
+    this.session.persistSnapshot();
+    return prev;
+  }
+
+  private upsertAccountSignal(account: VikunjaAccount): void {
+    const current = [...this.accounts];
+    const idx = current.findIndex((a) => a.integrationId === account.integrationId);
+    if (idx >= 0) {
+      current[idx] = account;
+    } else {
+      current.push(account);
+    }
+    this.session.signals["vikunja:accounts"] = current;
+    if (current[0]?.integrationId === account.integrationId) {
+      this.session.signals["vikunja:status"] = account;
+      this.session.signals["vikunja:projects"] = account.projects;
+      this.session.signals["vikunja:labels"] = account.labels;
+      this.session.signals["vikunja:tasks"] = account.tasks;
+    }
+    this.session.persistSnapshot();
+  }
+
   async connect(payload: {
+    integration_id?: string;
+    label?: string;
     server_url: string;
     api_token?: string;
     username?: string;
     password?: string;
     totp_passcode?: string;
-  }): Promise<string | null> {
+  }): Promise<{ error: string | null; account?: VikunjaAccount }> {
     this.isConnecting = true;
     try {
       const res = await fetch("/api/v1/integrations/vikunja/auth", {
@@ -202,54 +344,76 @@ export class VikunjaController {
       });
       if (!res.ok) {
         const msg = await res.text();
-        return msg.trim() || `Connection failed (HTTP ${res.status})`;
+        return { error: msg.trim() || `Connection failed (HTTP ${res.status})` };
       }
-      const status = (await res.json()) as VikunjaStatus;
-      this.session.signals["vikunja:status"] = status;
-      this.session.persistSnapshot();
-      return null;
+      const account = (await res.json()) as VikunjaAccount;
+      this.upsertAccountSignal(account);
+      return { error: null, account };
     } catch (e) {
-      return e instanceof Error ? e.message : "Network error connecting to Vikunja";
+      return {
+        error: e instanceof Error ? e.message : "Network error connecting to Vikunja",
+      };
     } finally {
       this.isConnecting = false;
     }
   }
 
-  async disconnect(): Promise<void> {
-    const id = this.status.integrationId;
+  async disconnect(integrationId?: string | null): Promise<void> {
+    const id = this.resolveIntegrationId(integrationId);
     if (!id) return;
     await fetch(`/api/v1/integrations/${id}`, { method: "DELETE" });
-    this.session.signals["vikunja:status"] = { connected: false, taskCount: 0 };
-    this.session.signals["vikunja:tasks"] = [];
-    this.session.signals["vikunja:projects"] = [];
-    this.session.signals["vikunja:labels"] = [];
+
+    const remaining = this.accounts.filter((a) => a.integrationId !== id);
+    this.session.signals["vikunja:accounts"] = remaining;
+    if (remaining.length === 0) {
+      this.session.signals["vikunja:status"] = { connected: false, taskCount: 0 };
+      this.session.signals["vikunja:tasks"] = [];
+      this.session.signals["vikunja:projects"] = [];
+      this.session.signals["vikunja:labels"] = [];
+    } else {
+      const primary = remaining[0];
+      this.session.signals["vikunja:status"] = primary;
+      this.session.signals["vikunja:projects"] = primary.projects;
+      this.session.signals["vikunja:labels"] = primary.labels;
+      this.session.signals["vikunja:tasks"] = primary.tasks;
+    }
     this.session.persistSnapshot();
   }
 
-  async syncNow(): Promise<void> {
+  async syncNow(integrationId?: string | null): Promise<void> {
     if (this.isSyncing) return;
     this.isSyncing = true;
     try {
-      const res = await fetch("/api/v1/vikunja/sync", { method: "POST" });
+      const url = integrationId
+        ? `/api/v1/vikunja/sync?integration_id=${encodeURIComponent(integrationId)}`
+        : "/api/v1/vikunja/sync";
+      const res = await fetch(url, { method: "POST" });
       if (res.ok) {
-        const status = (await res.json()) as VikunjaStatus;
-        this.session.signals["vikunja:status"] = status;
-        this.session.persistSnapshot();
+        const acct = (await res.json()) as VikunjaAccount;
+        if (acct.integrationId) {
+          this.upsertAccountSignal(acct);
+        }
       }
     } finally {
       this.isSyncing = false;
     }
   }
 
-  async createTask(input: {
-    project_id: number;
-    title: string;
-    description?: string;
-    priority?: number;
-    due_date?: string;
-    is_favorite?: boolean;
-    label_ids?: number[];
-  }): Promise<VikunjaTask | null> {
+  async createTask(
+    input: {
+      project_id: number;
+      title: string;
+      description?: string;
+      priority?: number;
+      due_date?: string;
+      is_favorite?: boolean;
+      label_ids?: number[];
+    },
+    integrationId?: string | null,
+  ): Promise<VikunjaTask | null> {
+    const targetId = this.resolveIntegrationId(integrationId);
+    if (!targetId) return null;
+
     const tempId = -Date.now();
     const optimistic: VikunjaTask = {
       id: tempId,
@@ -262,30 +426,27 @@ export class VikunjaController {
       due_date: input.due_date ?? "",
       is_favorite: Boolean(input.is_favorite),
       percent_done: 0,
-      labels: this.labels.filter((l) => input.label_ids?.includes(l.id)),
+      labels: this.getLabels(targetId).filter((l) => input.label_ids?.includes(l.id)),
       created: new Date().toISOString(),
     };
 
-    const prev = [...this.tasks];
-    this.session.signals["vikunja:tasks"] = [optimistic, ...prev];
-    this.session.persistSnapshot();
+    const prev = this.setAccountTasks(targetId, (tasks) => [optimistic, ...tasks]);
 
     try {
       const res = await fetch("/api/v1/vikunja/tasks", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(input),
+        body: JSON.stringify({ ...input, integration_id: targetId }),
       });
       if (!res.ok) throw new Error("Failed creating task");
       const created = (await res.json()) as VikunjaTask;
-      this.session.signals["vikunja:tasks"] = [
+      this.setAccountTasks(targetId, (tasks) => [
         created,
-        ...this.tasks.filter((t) => t.id !== tempId && t.id !== created.id),
-      ];
-      this.session.persistSnapshot();
+        ...tasks.filter((t) => t.id !== tempId && t.id !== created.id),
+      ]);
       return created;
     } catch {
-      this.session.signals["vikunja:tasks"] = prev;
+      this.session.signals["vikunja:accounts"] = prev;
       this.session.persistSnapshot();
       return null;
     }
@@ -303,103 +464,123 @@ export class VikunjaController {
       percent_done: number;
       project_id: number;
     }>,
+    integrationId?: string | null,
   ): Promise<VikunjaTask | null> {
-    const prev = [...this.tasks];
-    const cleanDue = patch.due_date === VIKUNJA_ZERO_DATE ? "" : patch.due_date;
+    const targetId = this.resolveIntegrationId(integrationId);
+    if (!targetId) return null;
 
-    this.session.signals["vikunja:tasks"] = prev.map((t) =>
-      t.id === taskId
-        ? {
-            ...t,
-            ...patch,
-            ...(patch.due_date !== undefined ? { due_date: cleanDue } : {}),
-          }
-        : t,
+    const cleanDue = patch.due_date === VIKUNJA_ZERO_DATE ? "" : patch.due_date;
+    const prev = this.setAccountTasks(targetId, (tasks) =>
+      tasks.map((t) =>
+        t.id === taskId
+          ? {
+              ...t,
+              ...patch,
+              ...(patch.due_date !== undefined ? { due_date: cleanDue } : {}),
+            }
+          : t,
+      ),
     );
-    this.session.persistSnapshot();
 
     try {
-      const res = await fetch(`/api/v1/vikunja/tasks/${taskIDOrThrow(taskId)}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(patch),
-      });
+      const res = await fetch(
+        this.withIntegrationQuery(`/api/v1/vikunja/tasks/${taskIDOrThrow(taskId)}`, targetId),
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(patch),
+        },
+      );
       if (!res.ok) throw new Error("Failed updating task");
       const updated = (await res.json()) as VikunjaTask;
-      this.session.signals["vikunja:tasks"] = this.tasks.map((t) =>
-        t.id === taskId ? updated : t,
-      );
-      this.session.persistSnapshot();
+      this.setAccountTasks(targetId, (tasks) => tasks.map((t) => (t.id === taskId ? updated : t)));
       return updated;
     } catch {
-      this.session.signals["vikunja:tasks"] = prev;
+      this.session.signals["vikunja:accounts"] = prev;
       this.session.persistSnapshot();
       return null;
     }
   }
 
-  async deleteTask(taskId: number): Promise<boolean> {
-    const prev = [...this.tasks];
-    this.session.signals["vikunja:tasks"] = prev.filter((t) => t.id !== taskId);
-    this.session.persistSnapshot();
+  async deleteTask(taskId: number, integrationId?: string | null): Promise<boolean> {
+    const targetId = this.resolveIntegrationId(integrationId);
+    if (!targetId) return false;
+
+    const prev = this.setAccountTasks(targetId, (tasks) => tasks.filter((t) => t.id !== taskId));
 
     try {
-      const res = await fetch(`/api/v1/vikunja/tasks/${taskId}`, {
-        method: "DELETE",
-      });
+      const res = await fetch(
+        this.withIntegrationQuery(`/api/v1/vikunja/tasks/${taskId}`, targetId),
+        { method: "DELETE" },
+      );
       if (!res.ok) throw new Error("Failed deleting task");
       return true;
     } catch {
-      this.session.signals["vikunja:tasks"] = prev;
+      this.session.signals["vikunja:accounts"] = prev;
       this.session.persistSnapshot();
       return false;
     }
   }
 
-  async toggleTaskLabel(taskId: number, label: VikunjaLabel, attach: boolean): Promise<void> {
-    const prev = [...this.tasks];
-    this.session.signals["vikunja:tasks"] = prev.map((t) => {
-      if (t.id !== taskId) return t;
-      const existing = t.labels ?? [];
-      const nextLabels = attach
-        ? [...existing.filter((l) => l.id !== label.id), label]
-        : existing.filter((l) => l.id !== label.id);
-      return { ...t, labels: nextLabels };
-    });
+  async toggleTaskLabel(
+    taskId: number,
+    label: VikunjaLabel,
+    attach: boolean,
+    integrationId?: string | null,
+  ): Promise<void> {
+    const targetId = this.resolveIntegrationId(integrationId);
+    if (!targetId) return;
+
+    const prev = this.setAccountTasks(targetId, (tasks) =>
+      tasks.map((t) => {
+        if (t.id !== taskId) return t;
+        const existing = t.labels ?? [];
+        const nextLabels = attach
+          ? [...existing.filter((l) => l.id !== label.id), label]
+          : existing.filter((l) => l.id !== label.id);
+        return { ...t, labels: nextLabels };
+      }),
+    );
 
     try {
-      const url = attach
+      const base = attach
         ? `/api/v1/vikunja/tasks/${taskId}/labels`
         : `/api/v1/vikunja/tasks/${taskId}/labels/${label.id}`;
-      const res = await fetch(url, {
+      const res = await fetch(this.withIntegrationQuery(base, targetId), {
         method: attach ? "POST" : "DELETE",
         headers: attach ? { "Content-Type": "application/json" } : undefined,
         body: attach ? JSON.stringify({ label_id: label.id }) : undefined,
       });
       if (!res.ok) throw new Error("Failed updating label");
       const updated = (await res.json()) as VikunjaTask;
-      this.session.signals["vikunja:tasks"] = this.tasks.map((t) =>
-        t.id === taskId ? updated : t,
-      );
-      this.session.persistSnapshot();
+      this.setAccountTasks(targetId, (tasks) => tasks.map((t) => (t.id === taskId ? updated : t)));
     } catch {
-      this.session.signals["vikunja:tasks"] = prev;
+      this.session.signals["vikunja:accounts"] = prev;
     }
   }
 
-  async fetchComments(taskId: number): Promise<VikunjaComment[]> {
-    const res = await fetch(`/api/v1/vikunja/tasks/${taskId}/comments`);
+  async fetchComments(taskId: number, integrationId?: string | null): Promise<VikunjaComment[]> {
+    const res = await fetch(
+      this.withIntegrationQuery(`/api/v1/vikunja/tasks/${taskId}/comments`, integrationId),
+    );
     if (!res.ok) return [];
     return (await res.json()) as VikunjaComment[];
   }
 
-  async postComment(taskId: number, plainText: string): Promise<VikunjaComment | null> {
+  async postComment(
+    taskId: number,
+    plainText: string,
+    integrationId?: string | null,
+  ): Promise<VikunjaComment | null> {
     const html = plainTextToTipTapHTML(plainText);
-    const res = await fetch(`/api/v1/vikunja/tasks/${taskId}/comments`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ comment: html }),
-    });
+    const res = await fetch(
+      this.withIntegrationQuery(`/api/v1/vikunja/tasks/${taskId}/comments`, integrationId),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ comment: html }),
+      },
+    );
     if (!res.ok) return null;
     return (await res.json()) as VikunjaComment;
   }

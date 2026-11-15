@@ -49,6 +49,18 @@
         return dashboard.workspaces.find((w) => w.id === wsId)?.name ?? "Home";
     }
 
+    let activeTodoNode = $derived(
+        dashboard.nodes.find(
+            (n) =>
+                n.workspace_id === dashboard.activeWorkspace?.id &&
+                n.node_type === "todo",
+        ) ?? dashboard.nodes.find((n) => n.node_type === "todo"),
+    );
+
+    let activeTodoAccount = $derived(
+        dashboard.vikunja.getAccountForNode(activeTodoNode),
+    );
+
     let results = $derived.by<SpotlightResult[]>(() => {
         const q = query.trim();
         const lower = q.toLowerCase();
@@ -62,12 +74,16 @@
         ) {
             const taskText = q.replace(/^(todo|remind|v):\s*/i, "").trim();
             if (taskText) {
+                const targetAcctLabel = activeTodoAccount
+                    ? activeTodoAccount.label ||
+                      `@${activeTodoAccount.username}`
+                    : "";
                 list.push({
                     id: "cmd:todo",
                     kind: "command",
                     title: `Create Vikunja Task: "${taskText}"`,
-                    subtitle: dashboard.vikunja.status.connected
-                        ? "Supports #project, !priority, today / tomorrow"
+                    subtitle: activeTodoAccount?.connected
+                        ? `${targetAcctLabel ? `${targetAcctLabel} • ` : ""}Supports #project, !priority, today / tomorrow`
                         : "Connect Vikunja in a Tasks widget first",
                     execute: async () => {
                         await dashboard.quickAddReminder(taskText);
@@ -131,11 +147,18 @@
             }
         }
 
-        // 4. Filter Live Vikunja Tasks & Synced .ics Calendar Events
+        // 4. Filter Live Vikunja Tasks (across all accounts) & Synced .ics Calendar Events
         if (lower.length > 0) {
-            for (const vt of dashboard.vikunja.tasks) {
-                const ident = dashboard.vikunja.formatTaskIdentifier(vt);
-                const proj = dashboard.vikunja.getProjectById(vt.project_id);
+            const hasMultipleAccounts = dashboard.vikunja.accounts.length > 1;
+            for (const { account, task: vt } of dashboard.vikunja.allTasks) {
+                const ident = dashboard.vikunja.formatTaskIdentifier(
+                    vt,
+                    account.integrationId,
+                );
+                const proj = dashboard.vikunja.getProjectById(
+                    vt.project_id,
+                    account.integrationId,
+                );
                 const labelText = (vt.labels ?? [])
                     .map((l) => l.title)
                     .join(" ");
@@ -145,14 +168,20 @@
                     (proj?.title.toLowerCase().includes(lower) ?? false) ||
                     labelText.toLowerCase().includes(lower)
                 ) {
+                    const acctPrefix = hasMultipleAccounts
+                        ? `${account.label || `@${account.username}`} • `
+                        : "";
                     list.push({
-                        id: `vikunja:${vt.id}`,
+                        id: `vikunja:${account.integrationId}:${vt.id}`,
                         kind: "todo",
                         title: vt.title,
-                        subtitle: `${ident}${proj ? ` • ${proj.title}` : ""}${vt.done ? " (Done)" : ""}`,
+                        subtitle: `${acctPrefix}${ident}${proj ? ` • ${proj.title}` : ""}${vt.done ? " (Done)" : ""}`,
                         execute: () => {
                             dashboard.closeSpotlight();
-                            dashboard.openVikunjaModal(vt.id);
+                            dashboard.openVikunjaModal(
+                                vt.id,
+                                account.integrationId,
+                            );
                         },
                     });
                 }

@@ -73,7 +73,7 @@ class DashboardStore {
   );
 
   openVikunjaTask = $derived<VikunjaTask | null>(
-    this.vikunja.tasks.find((t) => t.id === this.overlays.openVikunjaTaskId) ?? null,
+    this.vikunja.findTask(this.overlays.openVikunjaTaskId, this.overlays.openVikunjaIntegrationId),
   );
 
   contextMenuNode = $derived<DashboardNode | null>(
@@ -300,6 +300,9 @@ class DashboardStore {
   get openVikunjaTaskId() {
     return this.overlays.openVikunjaTaskId;
   }
+  get openVikunjaIntegrationId() {
+    return this.overlays.openVikunjaIntegrationId;
+  }
   get isAppLibraryOpen() {
     return this.overlays.isAppLibraryOpen;
   }
@@ -345,9 +348,9 @@ class DashboardStore {
   closeCalendarModal() {
     this.overlays.closeCalendarModal();
   }
-  openVikunjaModal(taskId: number) {
+  openVikunjaModal(taskId: number, integrationId?: string | null) {
     this.closeControlCenter();
-    this.overlays.openVikunjaModal(taskId);
+    this.overlays.openVikunjaModal(taskId, integrationId);
   }
   closeVikunjaModal() {
     this.overlays.closeVikunjaModal();

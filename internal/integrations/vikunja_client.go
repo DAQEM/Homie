@@ -23,6 +23,7 @@ const (
 var vikunjaFarFuture = time.Date(9999, time.December, 31, 0, 0, 0, 0, time.UTC)
 
 type VikunjaCredentials struct {
+	Label       string `json:"label,omitempty"`
 	ServerURL   string `json:"server_url"`
 	FrontendURL string `json:"frontend_url,omitempty"`
 	APIToken    string `json:"api_token"`

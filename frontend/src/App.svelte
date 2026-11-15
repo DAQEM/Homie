@@ -680,7 +680,8 @@
                         <section
                             bind:this={gridSectionEls[ws.id]}
                             data-wallpaper-surface="true"
-                            class="relative grid grid-cols-4 md:grid-cols-8 lg:grid-cols-16 auto-rows-[100px] gap-4 max-w-[1520px] mx-auto"
+                            style="grid-template-columns: repeat({dashboard.activeGridCols}, minmax(0, 1fr));"
+                            class="relative grid auto-rows-[100px] gap-4 max-w-[1520px] mx-auto"
                         >
                             {#if isActivePage}
                                 {#each cells as cell (`${cell.x}:${cell.y}`)}

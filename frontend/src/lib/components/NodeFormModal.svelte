@@ -65,6 +65,20 @@
             dashboard.nodeModal.height >= 4,
     );
 
+    let selectedTodoAccount = $derived(
+        dashboard.vikunja.getAccountById(
+            dashboard.nodeModal.settings.vikunjaIntegrationId,
+        ),
+    );
+    let todoProjects = $derived(
+        dashboard.vikunja.getWritableProjects(
+            selectedTodoAccount?.integrationId,
+        ),
+    );
+    let todoLabels = $derived(
+        dashboard.vikunja.getLabels(selectedTodoAccount?.integrationId),
+    );
+
     $effect(() => {
         if (
             isQuadClockSelected &&
@@ -73,6 +87,46 @@
         ) {
             dashboard.nodeModal.settings.cities =
                 structuredClone(DEFAULT_QUAD_CITIES);
+        }
+    });
+
+    $effect(() => {
+        if (
+            dashboard.nodeModal.open &&
+            dashboard.nodeModal.node_type === "todo"
+        ) {
+            if (
+                !dashboard.nodeModal.settings.vikunjaIntegrationId &&
+                dashboard.vikunja.accounts.length > 0
+            ) {
+                dashboard.nodeModal.settings.vikunjaIntegrationId =
+                    dashboard.vikunja.accounts[0].integrationId;
+            }
+            if (
+                dashboard.nodeModal.settings.vikunjaFilter === "project" &&
+                todoProjects.length > 0 &&
+                (!dashboard.nodeModal.settings.vikunjaProjectId ||
+                    !todoProjects.some(
+                        (p) =>
+                            p.id ===
+                            dashboard.nodeModal.settings.vikunjaProjectId,
+                    ))
+            ) {
+                dashboard.nodeModal.settings.vikunjaProjectId =
+                    todoProjects[0].id;
+            }
+            if (
+                dashboard.nodeModal.settings.vikunjaFilter === "label" &&
+                todoLabels.length > 0 &&
+                (!dashboard.nodeModal.settings.vikunjaLabelId ||
+                    !todoLabels.some(
+                        (l) =>
+                            l.id ===
+                            dashboard.nodeModal.settings.vikunjaLabelId,
+                    ))
+            ) {
+                dashboard.nodeModal.settings.vikunjaLabelId = todoLabels[0].id;
+            }
         }
     });
 
@@ -108,7 +162,7 @@
             label: "Vikunja Tasks",
             subtitle: "Live projects, priorities & due dates",
             description:
-                "Real-time two-way Vikunja integration with filtered project/today scopes, quick-add, and task inspection.",
+                "Real-time two-way Vikunja integration with per-widget account, project, or label scopes.",
             accent: "bg-[#0A84FF]",
         },
         {
@@ -212,8 +266,14 @@
                 engineUrl:
                     dashboard.nodeModal.settings.engineUrl ||
                     "https://www.google.com/search?q=",
+                vikunjaIntegrationId:
+                    dashboard.nodeModal.settings.vikunjaIntegrationId,
                 vikunjaFilter:
                     dashboard.nodeModal.settings.vikunjaFilter || "all",
+                vikunjaProjectId: dashboard.nodeModal.settings.vikunjaProjectId,
+                vikunjaLabelId: dashboard.nodeModal.settings.vikunjaLabelId,
+                vikunjaDefaultProjectId:
+                    dashboard.nodeModal.settings.vikunjaDefaultProjectId,
                 events: dashboard.nodeModal.settings.events?.length
                     ? dashboard.nodeModal.settings.events
                     : [
@@ -792,6 +852,34 @@
                                             </select>
                                         </label>
                                     {:else if dashboard.nodeModal.node_type === "todo"}
+                                        {#if dashboard.vikunja.accounts.length > 1}
+                                            <label class="block space-y-1">
+                                                <span
+                                                    class="text-[10px] font-medium text-white/60 block"
+                                                >
+                                                    Account
+                                                </span>
+                                                <select
+                                                    bind:value={
+                                                        dashboard.nodeModal
+                                                            .settings
+                                                            .vikunjaIntegrationId
+                                                    }
+                                                    class="w-full ios-input px-2.5 py-1.5 text-xs text-white"
+                                                >
+                                                    {#each dashboard.vikunja.accounts as acct (acct.integrationId)}
+                                                        <option
+                                                            value={acct.integrationId}
+                                                            class="bg-[#181920]"
+                                                        >
+                                                            {acct.label ||
+                                                                `@${acct.username}`}
+                                                        </option>
+                                                    {/each}
+                                                </select>
+                                            </label>
+                                        {/if}
+
                                         <label class="block space-y-1">
                                             <span
                                                 class="text-[10px] font-medium text-white/60 block"
@@ -835,10 +923,15 @@
                                                     class="bg-[#181920]"
                                                     >Project</option
                                                 >
+                                                <option
+                                                    value="label"
+                                                    class="bg-[#181920]"
+                                                    >Label</option
+                                                >
                                             </select>
                                         </label>
 
-                                        {#if dashboard.nodeModal.settings.vikunjaFilter === "project" && dashboard.vikunja.writableProjects.length > 0}
+                                        {#if dashboard.nodeModal.settings.vikunjaFilter === "project" && todoProjects.length > 0}
                                             <label class="block space-y-1">
                                                 <span
                                                     class="text-[10px] font-medium text-white/60 block"
@@ -853,12 +946,37 @@
                                                     }
                                                     class="w-full ios-input px-2.5 py-1.5 text-xs text-white"
                                                 >
-                                                    {#each dashboard.vikunja.writableProjects as proj (proj.id)}
+                                                    {#each todoProjects as proj (proj.id)}
                                                         <option
                                                             value={proj.id}
                                                             class="bg-[#181920]"
                                                         >
                                                             {proj.title}
+                                                        </option>
+                                                    {/each}
+                                                </select>
+                                            </label>
+                                        {:else if dashboard.nodeModal.settings.vikunjaFilter === "label" && todoLabels.length > 0}
+                                            <label class="block space-y-1">
+                                                <span
+                                                    class="text-[10px] font-medium text-white/60 block"
+                                                >
+                                                    Target Label
+                                                </span>
+                                                <select
+                                                    bind:value={
+                                                        dashboard.nodeModal
+                                                            .settings
+                                                            .vikunjaLabelId
+                                                    }
+                                                    class="w-full ios-input px-2.5 py-1.5 text-xs text-white"
+                                                >
+                                                    {#each todoLabels as lbl (lbl.id)}
+                                                        <option
+                                                            value={lbl.id}
+                                                            class="bg-[#181920]"
+                                                        >
+                                                            {lbl.title}
                                                         </option>
                                                     {/each}
                                                 </select>

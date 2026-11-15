@@ -89,6 +89,8 @@
     let newFeedUrl = $state("");
     let newFeedColor = $state(FEED_COLORS[0]);
 
+    let showAddAccountForm = $state(false);
+    let vLabel = $state("");
     let vAuthMode = $state<"token" | "password">("token");
     let vServerUrl = $state("https://try.vikunja.io");
     let vApiToken = $state("");
@@ -108,6 +110,18 @@
             : null,
     );
 
+    let selectedTodoAccount = $derived(
+        dashboard.vikunja.getAccountById(settings.vikunjaIntegrationId),
+    );
+    let todoAccountProjects = $derived(
+        dashboard.vikunja.getWritableProjects(
+            selectedTodoAccount?.integrationId,
+        ),
+    );
+    let todoAccountLabels = $derived(
+        dashboard.vikunja.getLabels(selectedTodoAccount?.integrationId),
+    );
+
     $effect(() => {
         if (isQuadClock && (!settings.cities || settings.cities.length < 4)) {
             settings.cities = buildDefaultQuadCities(node);
@@ -117,8 +131,46 @@
                 settings.location = node.title || "Amsterdam";
             if (!settings.tempUnit) settings.tempUnit = "C";
         }
-        if (node.node_type === "todo" && !settings.vikunjaFilter) {
-            settings.vikunjaFilter = "all";
+        if (node.node_type === "todo") {
+            if (!settings.vikunjaFilter) {
+                settings.vikunjaFilter = "all";
+            }
+            if (
+                !settings.vikunjaIntegrationId &&
+                dashboard.vikunja.accounts.length > 0
+            ) {
+                settings.vikunjaIntegrationId =
+                    dashboard.vikunja.accounts[0].integrationId;
+            }
+            if (
+                settings.vikunjaFilter === "project" &&
+                todoAccountProjects.length > 0 &&
+                (!settings.vikunjaProjectId ||
+                    !todoAccountProjects.some(
+                        (p) => p.id === settings.vikunjaProjectId,
+                    ))
+            ) {
+                settings.vikunjaProjectId = todoAccountProjects[0].id;
+            }
+            if (
+                settings.vikunjaFilter === "label" &&
+                todoAccountLabels.length > 0 &&
+                (!settings.vikunjaLabelId ||
+                    !todoAccountLabels.some(
+                        (l) => l.id === settings.vikunjaLabelId,
+                    ))
+            ) {
+                settings.vikunjaLabelId = todoAccountLabels[0].id;
+            }
+            if (
+                settings.vikunjaDefaultProjectId &&
+                todoAccountProjects.length > 0 &&
+                !todoAccountProjects.some(
+                    (p) => p.id === settings.vikunjaDefaultProjectId,
+                )
+            ) {
+                settings.vikunjaDefaultProjectId = undefined;
+            }
         }
         if (node.node_type === "calendar") {
             if (!settings.timezone) {
@@ -190,20 +242,40 @@
             vAuthError = "Server URL is required";
             return;
         }
-        const err = await dashboard.vikunja.connect({
+        const res = await dashboard.vikunja.connect({
+            label: vLabel.trim() || undefined,
             server_url: vServerUrl.trim(),
             api_token: vAuthMode === "token" ? vApiToken.trim() : undefined,
             username: vAuthMode === "password" ? vUsername.trim() : undefined,
             password: vAuthMode === "password" ? vPassword : undefined,
             totp_passcode: vAuthMode === "password" ? vTotp.trim() : undefined,
         });
-        if (err) {
-            vAuthError = err;
+        if (res.error) {
+            vAuthError = res.error;
         } else {
+            if (res.account?.integrationId) {
+                settings.vikunjaIntegrationId = res.account.integrationId;
+                settings.vikunjaProjectId = undefined;
+                settings.vikunjaLabelId = undefined;
+                settings.vikunjaDefaultProjectId = undefined;
+            }
+            showAddAccountForm = false;
+            vLabel = "";
             vApiToken = "";
             vPassword = "";
             vTotp = "";
         }
+    }
+
+    async function handleDisconnectAccount() {
+        const targetId = selectedTodoAccount?.integrationId;
+        if (!targetId) return;
+        await dashboard.vikunja.disconnect(targetId);
+        settings.vikunjaIntegrationId =
+            dashboard.vikunja.accounts[0]?.integrationId;
+        settings.vikunjaProjectId = undefined;
+        settings.vikunjaLabelId = undefined;
+        settings.vikunjaDefaultProjectId = undefined;
     }
 
     async function handleSave(e: SubmitEvent) {
@@ -385,6 +457,7 @@
                             type="text"
                             required
                             bind:value={title}
+                            placeholder="e.g. Work, Personal"
                             class="w-full ios-input px-2 py-1 text-[11px] text-white"
                         />
                     </label>
@@ -423,7 +496,43 @@
                     </label>
                 </div>
 
-                {#if dashboard.vikunja.status.connected}
+                {#if dashboard.vikunja.accounts.length > 0 && !showAddAccountForm}
+                    <div class="space-y-0.5">
+                        <div class="flex items-center justify-between">
+                            <span class="text-[10px] font-medium text-white/55">
+                                Vikunja Account
+                            </span>
+                            <button
+                                type="button"
+                                onclick={() => {
+                                    vAuthError = null;
+                                    showAddAccountForm = true;
+                                }}
+                                class="text-[10px] font-semibold text-primary hover:underline flex items-center gap-0.5 cursor-pointer"
+                            >
+                                <Plus class="size-2.5" />
+                                <span>Add Account</span>
+                            </button>
+                        </div>
+                        <select
+                            bind:value={settings.vikunjaIntegrationId}
+                            class="w-full ios-input px-2 py-1 text-[11px] text-white"
+                        >
+                            {#each dashboard.vikunja.accounts as acct (acct.integrationId)}
+                                <option
+                                    value={acct.integrationId}
+                                    class="bg-[#181920]"
+                                >
+                                    {acct.label
+                                        ? `${acct.label} (@${acct.username})`
+                                        : `@${acct.username} • ${acct.serverUrl}`}
+                                </option>
+                            {/each}
+                        </select>
+                    </div>
+                {/if}
+
+                {#if selectedTodoAccount?.connected && !showAddAccountForm}
                     <div class="grid grid-cols-2 gap-1.5">
                         {#if settings.vikunjaFilter === "project"}
                             <label class="block space-y-0.5">
@@ -436,7 +545,7 @@
                                     bind:value={settings.vikunjaProjectId}
                                     class="w-full ios-input px-2 py-1 text-[11px] text-white"
                                 >
-                                    {#each dashboard.vikunja.writableProjects as proj (proj.id)}
+                                    {#each todoAccountProjects as proj (proj.id)}
                                         <option
                                             value={proj.id}
                                             class="bg-[#181920]"
@@ -457,7 +566,7 @@
                                     bind:value={settings.vikunjaLabelId}
                                     class="w-full ios-input px-2 py-1 text-[11px] text-white"
                                 >
-                                    {#each dashboard.vikunja.labels as lbl (lbl.id)}
+                                    {#each todoAccountLabels as lbl (lbl.id)}
                                         <option
                                             value={lbl.id}
                                             class="bg-[#181920]"
@@ -478,17 +587,24 @@
                             <span
                                 class="text-[10px] font-medium text-white/55 block"
                             >
-                                Default Target Project (New Tasks)
+                                Default Project (New Tasks)
                             </span>
                             <select
                                 bind:value={settings.vikunjaDefaultProjectId}
                                 class="w-full ios-input px-2 py-1 text-[11px] text-white"
                             >
                                 <option value={undefined} class="bg-[#181920]">
-                                    Auto ({dashboard.vikunja.writableProjects[0]
-                                        ?.title ?? "First Project"})
+                                    Auto ({settings.vikunjaFilter ===
+                                        "project" && settings.vikunjaProjectId
+                                        ? (todoAccountProjects.find(
+                                              (p) =>
+                                                  p.id ===
+                                                  settings.vikunjaProjectId,
+                                          )?.title ?? "Selected Project")
+                                        : (todoAccountProjects[0]?.title ??
+                                          "First Project")})
                                 </option>
-                                {#each dashboard.vikunja.writableProjects as proj (proj.id)}
+                                {#each todoAccountProjects as proj (proj.id)}
                                     <option
                                         value={proj.id}
                                         class="bg-[#181920]"
@@ -507,18 +623,23 @@
                             <div
                                 class="text-[11px] font-semibold text-[#30D158] truncate"
                             >
-                                Connected • @{dashboard.vikunja.status.username}
+                                {selectedTodoAccount.label
+                                    ? `${selectedTodoAccount.label} • `
+                                    : ""}@{selectedTodoAccount.username}
                             </div>
                             <div
                                 class="text-[9.5px] text-white/45 truncate font-mono"
                             >
-                                {dashboard.vikunja.status.serverUrl}
+                                {selectedTodoAccount.serverUrl}
                             </div>
                         </div>
                         <div class="flex items-center gap-1 shrink-0">
                             <button
                                 type="button"
-                                onclick={() => void dashboard.vikunja.syncNow()}
+                                onclick={() =>
+                                    void dashboard.vikunja.syncNow(
+                                        selectedTodoAccount.integrationId,
+                                    )}
                                 title="Sync Now"
                                 class="size-6 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center cursor-pointer"
                             >
@@ -530,9 +651,8 @@
                             </button>
                             <button
                                 type="button"
-                                onclick={() =>
-                                    void dashboard.vikunja.disconnect()}
-                                title="Disconnect Vikunja"
+                                onclick={handleDisconnectAccount}
+                                title="Disconnect This Account"
                                 class="size-6 rounded-lg bg-white/10 hover:bg-destructive/25 text-white/70 hover:text-destructive flex items-center justify-center cursor-pointer"
                             >
                                 <LogOut class="size-3" />
@@ -540,46 +660,70 @@
                         </div>
                     </div>
                 {:else}
-                    <div class="ios-nested-surface p-2.5 rounded-xl space-y-2">
+                    <div
+                        class="ios-nested-surface p-2.5 rounded-xl space-y-1.5"
+                    >
                         <div class="flex items-center justify-between gap-2">
                             <span
                                 class="text-[10.5px] font-semibold text-white/85 flex items-center gap-1"
                             >
                                 <Link2 class="size-3 text-primary" />
-                                Connect Vikunja Instance
+                                {dashboard.vikunja.accounts.length > 0
+                                    ? "Add Vikunja Account"
+                                    : "Connect Vikunja Instance"}
                             </span>
-                            <div
-                                class="flex items-center gap-1 p-0.5 rounded-full bg-black/30"
-                            >
-                                <button
-                                    type="button"
-                                    onclick={() => (vAuthMode = "token")}
-                                    class="px-2 py-0.5 rounded-full text-[9.5px] font-semibold cursor-pointer {vAuthMode ===
-                                    'token'
-                                        ? 'bg-white text-black'
-                                        : 'text-white/60'}"
+                            <div class="flex items-center gap-1.5">
+                                <div
+                                    class="flex items-center gap-1 p-0.5 rounded-full bg-black/30"
                                 >
-                                    API Token
-                                </button>
-                                <button
-                                    type="button"
-                                    onclick={() => (vAuthMode = "password")}
-                                    class="px-2 py-0.5 rounded-full text-[9.5px] font-semibold cursor-pointer {vAuthMode ===
-                                    'password'
-                                        ? 'bg-white text-black'
-                                        : 'text-white/60'}"
-                                >
-                                    Login
-                                </button>
+                                    <button
+                                        type="button"
+                                        onclick={() => (vAuthMode = "token")}
+                                        class="px-2 py-0.5 rounded-full text-[9.5px] font-semibold cursor-pointer {vAuthMode ===
+                                        'token'
+                                            ? 'bg-white text-black'
+                                            : 'text-white/60'}"
+                                    >
+                                        API Token
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onclick={() => (vAuthMode = "password")}
+                                        class="px-2 py-0.5 rounded-full text-[9.5px] font-semibold cursor-pointer {vAuthMode ===
+                                        'password'
+                                            ? 'bg-white text-black'
+                                            : 'text-white/60'}"
+                                    >
+                                        Login
+                                    </button>
+                                </div>
+                                {#if showAddAccountForm && dashboard.vikunja.accounts.length > 0}
+                                    <button
+                                        type="button"
+                                        onclick={() =>
+                                            (showAddAccountForm = false)}
+                                        class="text-[10px] text-white/55 hover:text-white cursor-pointer"
+                                    >
+                                        Cancel
+                                    </button>
+                                {/if}
                             </div>
                         </div>
 
-                        <input
-                            type="text"
-                            bind:value={vServerUrl}
-                            placeholder="https://vikunja.example.com"
-                            class="w-full ios-input px-2 py-1 text-[11px] text-white font-mono"
-                        />
+                        <div class="grid grid-cols-3 gap-1.5">
+                            <input
+                                type="text"
+                                bind:value={vLabel}
+                                placeholder="Label (Work)"
+                                class="col-span-1 ios-input px-2 py-1 text-[11px] text-white"
+                            />
+                            <input
+                                type="text"
+                                bind:value={vServerUrl}
+                                placeholder="https://vikunja.example.com"
+                                class="col-span-2 ios-input px-2 py-1 text-[11px] text-white font-mono"
+                            />
+                        </div>
 
                         {#if vAuthMode === "token"}
                             <input

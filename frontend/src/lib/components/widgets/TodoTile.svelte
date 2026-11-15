@@ -1,5 +1,4 @@
 <script lang="ts">
-    import { untrack } from "svelte";
     import {
         AlertCircle,
         Calendar as CalendarIcon,
@@ -23,9 +22,7 @@
     let { node }: Props = $props();
 
     let isComposerOpen = $state(false);
-    let showCompleted = $state(
-        untrack(() => Boolean(node.settings?.vikunjaShowCompleted)),
-    );
+    let previewShowCompleted = $state(false);
     let newText = $state("");
     let quickPriority = $state(0);
     let quickDue = $state<"none" | "today" | "tomorrow">("none");
@@ -36,9 +33,16 @@
     let pendingGraceIds = $state<Record<number, boolean>>({});
 
     let isPreview = $derived(node.id === "gallery-preview-node");
-    let vStatus = $derived(dashboard.vikunja.status);
-    let isConnected = $derived(isPreview || vStatus.connected);
+    let account = $derived(dashboard.vikunja.getAccountForNode(node));
+    let integrationId = $derived(account?.integrationId);
+    let isConnected = $derived(isPreview || Boolean(account?.connected));
     let isSyncing = $derived(dashboard.vikunja.isSyncing);
+
+    let showCompleted = $derived(
+        isPreview
+            ? previewShowCompleted
+            : Boolean(node.settings?.vikunjaShowCompleted),
+    );
 
     let scope = $derived<VikunjaScope>(node.settings?.vikunjaFilter ?? "all");
     let scopedTasks = $derived<VikunjaTask[]>(
@@ -60,6 +64,7 @@
         if (scope === "project" && node.settings?.vikunjaProjectId) {
             const p = dashboard.vikunja.getProjectById(
                 node.settings.vikunjaProjectId,
+                integrationId,
             );
             if (p?.hex_color) return p.hex_color;
         }
@@ -78,29 +83,39 @@
     });
 
     let scopeSubtitle = $derived.by(() => {
+        let baseLabel = "Vikunja";
         if (scope === "project" && node.settings?.vikunjaProjectId) {
-            return (
-                dashboard.vikunja.getProjectById(node.settings.vikunjaProjectId)
-                    ?.title ?? "Project"
-            );
+            baseLabel =
+                dashboard.vikunja.getProjectById(
+                    node.settings.vikunjaProjectId,
+                    integrationId,
+                )?.title ?? "Project";
+        } else if (scope === "label" && node.settings?.vikunjaLabelId) {
+            baseLabel =
+                dashboard.vikunja
+                    .getLabels(integrationId)
+                    .find((l) => l.id === node.settings?.vikunjaLabelId)
+                    ?.title ?? "Label";
+        } else {
+            const map: Record<VikunjaScope, string> = {
+                all: "All Open",
+                today: "Today",
+                upcoming: "Next 7 Days",
+                favorites: "Starred",
+                high_priority: "Priority",
+                project: "Project",
+                label: "Label",
+            };
+            baseLabel = map[scope];
         }
-        if (scope === "label" && node.settings?.vikunjaLabelId) {
-            return (
-                dashboard.vikunja.labels.find(
-                    (l) => l.id === node.settings?.vikunjaLabelId,
-                )?.title ?? "Label"
-            );
+
+        if (dashboard.vikunja.accounts.length > 1 && account) {
+            const acctName =
+                account.label ||
+                (account.username ? `@${account.username}` : "Account");
+            return `${acctName} • ${baseLabel}`;
         }
-        const map: Record<VikunjaScope, string> = {
-            all: "Vikunja",
-            today: "Today",
-            upcoming: "Next 7 Days",
-            favorites: "Starred",
-            high_priority: "Priority",
-            project: "Project",
-            label: "Label",
-        };
-        return map[scope];
+        return baseLabel;
     });
 
     function priorityRingStyle(priority: number, done: boolean): string {
@@ -152,6 +167,18 @@
         };
     }
 
+    function toggleShowCompleted(e: MouseEvent) {
+        e.stopPropagation();
+        if (isPreview) {
+            previewShowCompleted = !previewShowCompleted;
+            return;
+        }
+        void dashboard.updateNodeSettings(node.id, {
+            ...(node.settings ?? {}),
+            vikunjaShowCompleted: !showCompleted,
+        });
+    }
+
     function openComposer(e?: MouseEvent) {
         e?.stopPropagation();
         if (dashboard.isEditMode || isPreview || !isConnected) return;
@@ -164,7 +191,11 @@
         if (dashboard.isEditMode || isPreview) return;
 
         if (task.done) {
-            void dashboard.vikunja.updateTask(task.id, { done: false });
+            void dashboard.vikunja.updateTask(
+                task.id,
+                { done: false },
+                integrationId,
+            );
             return;
         }
 
@@ -180,7 +211,11 @@
         const timer = setTimeout(() => {
             graceTimers.delete(task.id);
             delete pendingGraceIds[task.id];
-            void dashboard.vikunja.updateTask(task.id, { done: true });
+            void dashboard.vikunja.updateTask(
+                task.id,
+                { done: true },
+                integrationId,
+            );
         }, 650);
         graceTimers.set(task.id, timer);
     }
@@ -196,7 +231,11 @@
         const defaultProj = dashboard.vikunja.getDefaultProjectId(node);
         if (defaultProj <= 0) return;
 
-        const parsed = dashboard.vikunja.parseQuickInput(raw, defaultProj);
+        const parsed = dashboard.vikunja.parseQuickInput(
+            raw,
+            defaultProj,
+            integrationId,
+        );
         const title = parsed.title || raw;
         const priority =
             parsed.priority ||
@@ -238,14 +277,17 @@
         quickPriority = 0;
         quickDue = "none";
 
-        await dashboard.vikunja.createTask({
-            project_id: parsed.projectId,
-            title,
-            priority,
-            due_date: dueDate || undefined,
-            is_favorite: scope === "favorites",
-            label_ids: labelIds,
-        });
+        await dashboard.vikunja.createTask(
+            {
+                project_id: parsed.projectId,
+                title,
+                priority,
+                due_date: dueDate || undefined,
+                is_favorite: scope === "favorites",
+                label_ids: labelIds,
+            },
+            integrationId,
+        );
 
         queueMicrotask(() => composerInputEl?.focus());
     }
@@ -266,7 +308,7 @@
     function openTaskDetail(task: VikunjaTask, e: MouseEvent) {
         e.stopPropagation();
         if (dashboard.isEditMode || isPreview || task.id <= 0) return;
-        dashboard.openVikunjaModal(task.id);
+        dashboard.openVikunjaModal(task.id, integrationId);
     }
 </script>
 
@@ -287,7 +329,7 @@
                 >
                     {node.title}
                 </div>
-                {#if !isCompact && isConnected}
+                {#if isConnected && (!isCompact || scope !== "all" || dashboard.vikunja.accounts.length > 1)}
                     <div
                         class="text-[10px] font-medium ios-vibrant-secondary truncate leading-tight"
                     >
@@ -299,11 +341,11 @@
 
         <div class="flex items-center gap-1.5 shrink-0">
             {#if isConnected}
-                {#if vStatus.error}
+                {#if account?.error}
                     <button
                         type="button"
                         onclick={openConnectFlip}
-                        title={vStatus.error}
+                        title={account.error}
                         class="size-5.5 rounded-full bg-[#FF453A]/20 text-[#FF453A] flex items-center justify-center cursor-pointer"
                     >
                         <AlertCircle class="size-3" />
@@ -313,10 +355,7 @@
                 {#if completedTasks.length > 0 && !isCompact}
                     <button
                         type="button"
-                        onclick={(e) => {
-                            e.stopPropagation();
-                            showCompleted = !showCompleted;
-                        }}
+                        onclick={toggleShowCompleted}
                         title={showCompleted
                             ? "Hide completed"
                             : `Show ${completedTasks.length} completed`}
@@ -336,7 +375,7 @@
                         type="button"
                         onclick={(e) => {
                             e.stopPropagation();
-                            void dashboard.vikunja.syncNow();
+                            void dashboard.vikunja.syncNow(integrationId);
                         }}
                         title="Sync Vikunja"
                         class="size-6 rounded-full bg-white/8 hover:bg-white/16 text-white/65 hover:text-white flex items-center justify-center transition-colors cursor-pointer"
@@ -505,7 +544,10 @@
                 {@const due = formatShortDue(task.due_date)}
                 {@const proj =
                     scope !== "project"
-                        ? dashboard.vikunja.getProjectById(task.project_id)
+                        ? dashboard.vikunja.getProjectById(
+                              task.project_id,
+                              integrationId,
+                          )
                         : undefined}
                 <div
                     onclick={(e) => openTaskDetail(task, e)}
@@ -534,6 +576,7 @@
                                     >
                                         {dashboard.vikunja.formatTaskIdentifier(
                                             task,
+                                            integrationId,
                                         )}
                                     </span>
                                 {/if}
@@ -602,7 +645,10 @@
                                 type="button"
                                 onclick={(e) => {
                                     e.stopPropagation();
-                                    void dashboard.vikunja.deleteTask(task.id);
+                                    void dashboard.vikunja.deleteTask(
+                                        task.id,
+                                        integrationId,
+                                    );
                                 }}
                                 class="opacity-0 group-hover:opacity-100 text-white/35 hover:text-destructive p-0.5 rounded transition-all shrink-0 cursor-pointer"
                                 title="Delete task"

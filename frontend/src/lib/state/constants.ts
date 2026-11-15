@@ -12,8 +12,8 @@ export const RESPONSIVE_MAX_ROWS = 48;
 export const MAX_ICON_BYTES = 100 * 1024; // 100 KB
 
 export function getGridColsForWidth(width: number): number {
-  if (width >= 1024) return 16;
-  if (width >= 768) return 8;
+  if (width >= 1440) return 16;
+  if (width >= 860) return 8;
   return 4;
 }
 

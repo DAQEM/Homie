@@ -74,6 +74,7 @@ export type VikunjaScope =
 export interface VikunjaStatus {
   connected: boolean;
   integrationId?: string;
+  label?: string;
   serverUrl?: string;
   frontendUrl?: string;
   username?: string;
@@ -82,6 +83,12 @@ export interface VikunjaStatus {
   lastSyncedAt?: string;
   taskCount: number;
   error?: string;
+}
+
+export interface VikunjaAccount extends VikunjaStatus {
+  projects: VikunjaProject[];
+  labels: VikunjaLabel[];
+  tasks: VikunjaTask[];
 }
 
 export interface VikunjaProject {
@@ -202,6 +209,7 @@ export interface NodeSettings {
   placeholder?: string;
   engineUrl?: string;
   // Vikunja Tasks widget settings
+  vikunjaIntegrationId?: string;
   vikunjaFilter?: VikunjaScope;
   vikunjaProjectId?: number;
   vikunjaLabelId?: number;

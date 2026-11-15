@@ -54,6 +54,9 @@
             ? (dashboard.signals["system:hello:greeting"] as string)
             : "Brotli Snapshot Active",
     );
+    let connectedVikunjaAccounts = $derived(
+        dashboard.vikunja.accounts.filter((a) => a.connected),
+    );
 </script>
 
 {#if dashboard.isControlCenterOpen}
@@ -175,8 +178,8 @@
             >
                 <div class="flex items-center gap-2.5 min-w-0">
                     <div
-                        class="size-8 rounded-full {dashboard.vikunja.status
-                            .connected
+                        class="size-8 rounded-full {connectedVikunjaAccounts.length >
+                        0
                             ? 'bg-primary'
                             : 'bg-white/12'} text-white flex items-center justify-center shrink-0"
                     >
@@ -184,20 +187,25 @@
                     </div>
                     <div class="min-w-0">
                         <div class="text-xs font-semibold truncate">
-                            {dashboard.vikunja.status.connected
-                                ? `Vikunja • @${dashboard.vikunja.status.username}`
-                                : "Vikunja Disconnected"}
+                            {#if connectedVikunjaAccounts.length === 0}
+                                Vikunja Disconnected
+                            {:else if connectedVikunjaAccounts.length === 1}
+                                Vikunja • @{connectedVikunjaAccounts[0]
+                                    .username}
+                            {:else}
+                                {connectedVikunjaAccounts.length} Vikunja Accounts
+                            {/if}
                         </div>
                         <div
                             class="text-[10px] text-white/50 truncate ios-tabular-nums"
                         >
-                            {dashboard.vikunja.status.connected
+                            {connectedVikunjaAccounts.length > 0
                                 ? `${dashboard.vikunja.status.taskCount} open tasks`
                                 : "Flip a Tasks widget to connect"}
                         </div>
                     </div>
                 </div>
-                {#if dashboard.vikunja.status.connected}
+                {#if connectedVikunjaAccounts.length > 0}
                     <button
                         type="button"
                         onclick={() => void dashboard.vikunja.syncNow()}

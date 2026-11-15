@@ -95,7 +95,6 @@ func (c *boundedTTLCache[V]) Set(key string, val V) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if len(c.entries) >= c.maxSize {
-		// Evict expired items first, then drop one oldest-ish entry if still full
 		for k, e := range c.entries {
 			if now.After(e.expiresAt) {
 				delete(c.entries, k)
@@ -952,11 +951,13 @@ func (s *Server) handleCreateIntegration(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) handleAuthVikunjaIntegration(w http.ResponseWriter, r *http.Request, rawCreds json.RawMessage) {
 	var req struct {
-		ServerURL    string `json:"server_url"`
-		APIToken     string `json:"api_token"`
-		Username     string `json:"username"`
-		Password     string `json:"password"`
-		TOTPPasscode string `json:"totp_passcode"`
+		IntegrationID string `json:"integration_id"`
+		Label         string `json:"label"`
+		ServerURL     string `json:"server_url"`
+		APIToken      string `json:"api_token"`
+		Username      string `json:"username"`
+		Password      string `json:"password"`
+		TOTPPasscode  string `json:"totp_passcode"`
 	}
 	if err := json.Unmarshal(rawCreds, &req); err != nil {
 		http.Error(w, "invalid Vikunja credentials JSON", http.StatusBadRequest)
@@ -1000,7 +1001,42 @@ func (s *Server) handleAuthVikunjaIntegration(w http.ResponseWriter, r *http.Req
 		frontendURL = strings.TrimRight(info.FrontendURL, "/")
 	}
 
+	label := strings.TrimSpace(req.Label)
+	var existingID uuid.UUID
+
+	var existingRows []models.Integration
+	if err := s.db.WithContext(r.Context()).
+		Where("provider = ?", "vikunja").
+		Order("created_at ASC").
+		Find(&existingRows).Error; err == nil {
+		requestedID, parseErr := uuid.Parse(strings.TrimSpace(req.IntegrationID))
+		for _, row := range existingRows {
+			var meta struct {
+				Label     string `json:"label"`
+				ServerURL string `json:"server_url"`
+				Username  string `json:"username"`
+			}
+			_ = json.Unmarshal(row.Settings, &meta)
+
+			if parseErr == nil && requestedID != uuid.Nil && row.ID == requestedID {
+				existingID = row.ID
+				if label == "" {
+					label = meta.Label
+				}
+				break
+			}
+			if req.IntegrationID == "" && meta.ServerURL == canonicalBase && meta.Username == user.Username {
+				existingID = row.ID
+				if label == "" {
+					label = meta.Label
+				}
+				break
+			}
+		}
+	}
+
 	storedCreds, err := json.Marshal(integrations.VikunjaCredentials{
+		Label:       label,
 		ServerURL:   canonicalBase,
 		FrontendURL: frontendURL,
 		APIToken:    apiToken,
@@ -1019,6 +1055,7 @@ func (s *Server) handleAuthVikunjaIntegration(w http.ResponseWriter, r *http.Req
 	}
 
 	safeSettings, _ := json.Marshal(map[string]any{
+		"label":        label,
 		"server_url":   canonicalBase,
 		"frontend_url": frontendURL,
 		"username":     user.Username,
@@ -1027,8 +1064,13 @@ func (s *Server) handleAuthVikunjaIntegration(w http.ResponseWriter, r *http.Req
 
 	var integration models.Integration
 	err = s.db.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Delete(&models.Integration{}, "provider = ?", "vikunja").Error; err != nil {
-			return err
+		if existingID != uuid.Nil {
+			return tx.Model(&models.Integration{}).
+				Where("id = ?", existingID).
+				Updates(map[string]any{
+					"credentials": encryptedCreds,
+					"settings":    safeSettings,
+				}).Error
 		}
 		integration = models.Integration{
 			Provider:    "vikunja",
@@ -1042,9 +1084,14 @@ func (s *Server) handleAuthVikunjaIntegration(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	targetID := integration.ID
+	if existingID != uuid.Nil {
+		targetID = existingID
+	}
+
 	if s.vikunjaProvider != nil {
-		status := s.vikunjaProvider.SyncNow(r.Context())
-		writeJSON(w, http.StatusCreated, status)
+		acct := s.vikunjaProvider.SyncNow(r.Context(), targetID.String())
+		writeJSON(w, http.StatusCreated, acct)
 		return
 	}
 	writeJSON(w, http.StatusCreated, integration)
@@ -1066,7 +1113,7 @@ func (s *Server) handleDeleteIntegration(w http.ResponseWriter, r *http.Request)
 	}
 
 	if existing.Provider == "vikunja" && s.vikunjaProvider != nil {
-		s.vikunjaProvider.ClearState(r.Context())
+		s.vikunjaProvider.SyncNow(r.Context(), "")
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -1076,7 +1123,8 @@ func (s *Server) handleVikunjaSync(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "vikunja provider unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.vikunjaProvider.SyncNow(r.Context()))
+	integrationID := strings.TrimSpace(r.URL.Query().Get("integration_id"))
+	writeJSON(w, http.StatusOK, s.vikunjaProvider.SyncNow(r.Context(), integrationID))
 }
 
 func (s *Server) handleVikunjaCreateTask(w http.ResponseWriter, r *http.Request) {
@@ -1085,19 +1133,24 @@ func (s *Server) handleVikunjaCreateTask(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	var input struct {
-		ProjectID   int64   `json:"project_id"`
-		Title       string  `json:"title"`
-		Description string  `json:"description"`
-		Priority    int64   `json:"priority"`
-		DueDate     string  `json:"due_date"`
-		IsFavorite  bool    `json:"is_favorite"`
-		LabelIDs    []int64 `json:"label_ids"`
+		IntegrationID string  `json:"integration_id"`
+		ProjectID     int64   `json:"project_id"`
+		Title         string  `json:"title"`
+		Description   string  `json:"description"`
+		Priority      int64   `json:"priority"`
+		DueDate       string  `json:"due_date"`
+		IsFavorite    bool    `json:"is_favorite"`
+		LabelIDs      []int64 `json:"label_ids"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil || strings.TrimSpace(input.Title) == "" || input.ProjectID <= 0 {
 		http.Error(w, "project_id and title are required", http.StatusBadRequest)
 		return
 	}
-	task, err := s.vikunjaProvider.CreateTask(r.Context(), input.ProjectID, integrations.VikunjaTaskCreate{
+	integrationID := strings.TrimSpace(input.IntegrationID)
+	if integrationID == "" {
+		integrationID = strings.TrimSpace(r.URL.Query().Get("integration_id"))
+	}
+	task, err := s.vikunjaProvider.CreateTask(r.Context(), integrationID, input.ProjectID, integrations.VikunjaTaskCreate{
 		Title:       strings.TrimSpace(input.Title),
 		Description: input.Description,
 		Priority:    input.Priority,
@@ -1126,7 +1179,8 @@ func (s *Server) handleVikunjaPatchTask(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "invalid JSON patch", http.StatusBadRequest)
 		return
 	}
-	task, err := s.vikunjaProvider.PatchTask(r.Context(), taskID, patch)
+	integrationID := strings.TrimSpace(r.URL.Query().Get("integration_id"))
+	task, err := s.vikunjaProvider.PatchTask(r.Context(), integrationID, taskID, patch)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -1144,7 +1198,8 @@ func (s *Server) handleVikunjaDeleteTask(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "invalid task id", http.StatusBadRequest)
 		return
 	}
-	if err := s.vikunjaProvider.DeleteTask(r.Context(), taskID); err != nil {
+	integrationID := strings.TrimSpace(r.URL.Query().Get("integration_id"))
+	if err := s.vikunjaProvider.DeleteTask(r.Context(), integrationID, taskID); err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -1168,7 +1223,8 @@ func (s *Server) handleVikunjaAddLabel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "valid label_id is required", http.StatusBadRequest)
 		return
 	}
-	task, err := s.vikunjaProvider.SetTaskLabel(r.Context(), taskID, body.LabelID, true)
+	integrationID := strings.TrimSpace(r.URL.Query().Get("integration_id"))
+	task, err := s.vikunjaProvider.SetTaskLabel(r.Context(), integrationID, taskID, body.LabelID, true)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -1187,7 +1243,8 @@ func (s *Server) handleVikunjaRemoveLabel(w http.ResponseWriter, r *http.Request
 		http.Error(w, "invalid task or label id", http.StatusBadRequest)
 		return
 	}
-	task, err := s.vikunjaProvider.SetTaskLabel(r.Context(), taskID, labelID, false)
+	integrationID := strings.TrimSpace(r.URL.Query().Get("integration_id"))
+	task, err := s.vikunjaProvider.SetTaskLabel(r.Context(), integrationID, taskID, labelID, false)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -1205,7 +1262,8 @@ func (s *Server) handleVikunjaListComments(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "invalid task id", http.StatusBadRequest)
 		return
 	}
-	comments, err := s.vikunjaProvider.ListTaskComments(r.Context(), taskID)
+	integrationID := strings.TrimSpace(r.URL.Query().Get("integration_id"))
+	comments, err := s.vikunjaProvider.ListTaskComments(r.Context(), integrationID, taskID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -1230,7 +1288,8 @@ func (s *Server) handleVikunjaAddComment(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "comment is required", http.StatusBadRequest)
 		return
 	}
-	comment, err := s.vikunjaProvider.AddTaskComment(r.Context(), taskID, body.Comment)
+	integrationID := strings.TrimSpace(r.URL.Query().Get("integration_id"))
+	comment, err := s.vikunjaProvider.AddTaskComment(r.Context(), integrationID, taskID, body.Comment)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return

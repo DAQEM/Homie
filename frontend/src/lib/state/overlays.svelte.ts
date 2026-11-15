@@ -21,6 +21,7 @@ export class OverlayController {
 
   // Expanded Vikunja Task Modal State
   openVikunjaTaskId = $state<number | null>(null);
+  openVikunjaIntegrationId = $state<string | null>(null);
 
   // App Library, Spotlight, Workspace & Flipped Backface State
   isAppLibraryOpen = $state<boolean>(false);
@@ -136,7 +137,7 @@ export class OverlayController {
     this.openCalendarInitialDate = null;
   }
 
-  openVikunjaModal(taskId: number): void {
+  openVikunjaModal(taskId: number, integrationId?: string | null): void {
     this.closeContextMenu();
     this.closeAppLibrary();
     this.closeSpotlight();
@@ -144,10 +145,12 @@ export class OverlayController {
     this.resetFolderImmediate();
     this.flippedNodeId = null;
     this.openVikunjaTaskId = taskId;
+    this.openVikunjaIntegrationId = integrationId ?? null;
   }
 
   closeVikunjaModal(): void {
     this.openVikunjaTaskId = null;
+    this.openVikunjaIntegrationId = null;
   }
 
   openAppLibrary(originEl?: HTMLElement | null): void {

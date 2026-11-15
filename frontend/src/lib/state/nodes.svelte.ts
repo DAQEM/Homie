@@ -167,23 +167,44 @@ export class NodeController {
 
   async quickAddReminder(text: string): Promise<boolean> {
     const trimmed = text.trim();
-    if (!trimmed || !this.vikunja.status.connected) return false;
+    if (!trimmed) return false;
 
     const todoNode =
       this.session.nodes.find(
         (n) => n.workspace_id === this.session.activeWorkspace?.id && n.node_type === "todo",
       ) ?? this.session.nodes.find((n) => n.node_type === "todo");
 
+    const account = this.vikunja.getAccountForNode(todoNode);
+    if (!account?.connected || !account.integrationId) return false;
+
     const fallbackProjectId = this.vikunja.getDefaultProjectId(todoNode);
     if (fallbackProjectId <= 0) return false;
 
-    const parsed = this.vikunja.parseQuickInput(trimmed, fallbackProjectId);
-    const created = await this.vikunja.createTask({
-      project_id: parsed.projectId,
-      title: parsed.title || trimmed,
-      priority: parsed.priority,
-      due_date: parsed.dueDate || undefined,
-    });
+    const parsed = this.vikunja.parseQuickInput(trimmed, fallbackProjectId, account.integrationId);
+
+    const scope = todoNode?.settings?.vikunjaFilter;
+    let dueDate = parsed.dueDate;
+    if (!dueDate && scope === "today") {
+      const now = this.session.now;
+      dueDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 18, 0, 0).toISOString();
+    }
+
+    const labelIds =
+      scope === "label" && todoNode?.settings?.vikunjaLabelId
+        ? [todoNode.settings.vikunjaLabelId]
+        : undefined;
+
+    const created = await this.vikunja.createTask(
+      {
+        project_id: parsed.projectId,
+        title: parsed.title || trimmed,
+        priority: parsed.priority || (scope === "high_priority" ? 3 : 0),
+        due_date: dueDate || undefined,
+        is_favorite: scope === "favorites",
+        label_ids: labelIds,
+      },
+      account.integrationId,
+    );
     return created !== null;
   }
 
@@ -409,6 +430,7 @@ export class NodeController {
         sweepSeconds: true,
         placeholder: "Search the Web...",
         engineUrl: "https://www.google.com/search?q=",
+        vikunjaIntegrationId: this.vikunja.accounts[0]?.integrationId,
         vikunjaFilter: "all",
         vikunjaShowCompleted: false,
         events: [],
