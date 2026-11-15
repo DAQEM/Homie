@@ -1851,6 +1851,11 @@ func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 		contentType = http.DetectContentType(data)
 	}
 	w.Header().Set("Content-Type", contentType)
+	if cleanPath == "index.html" {
+		w.Header().Set("Cache-Control", "no-cache")
+	} else if strings.HasPrefix(cleanPath, "assets/") {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
 }
