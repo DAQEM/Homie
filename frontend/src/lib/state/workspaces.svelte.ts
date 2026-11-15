@@ -1,4 +1,4 @@
-import type { Workspace } from "../types";
+import { generateUUID, type Workspace } from "../types";
 import type { AppearanceController } from "./appearance.svelte";
 import { WORKSPACE_STORAGE_KEY } from "./constants";
 import type { DragController } from "./drag-controller.svelte";
@@ -198,7 +198,7 @@ export class WorkspaceController {
 
     const nowIso = new Date().toISOString();
     const optimisticWs: Workspace = {
-      id: crypto.randomUUID(),
+      id: generateUUID(),
       name: trimmed,
       created_at: nowIso,
       updated_at: nowIso,

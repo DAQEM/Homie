@@ -11,11 +11,12 @@
         Trash2,
     } from "@lucide/svelte";
     import { dashboard, WIDGET_SIZE_PRESETS } from "../state/dashboard.svelte";
-    import type {
-        CalendarFeed,
-        DashboardNode,
-        NodeSettings,
-        WorldClockCity,
+    import {
+        generateUUID,
+        type CalendarFeed,
+        type DashboardNode,
+        type NodeSettings,
+        type WorldClockCity,
     } from "../types";
 
     interface Props {
@@ -183,7 +184,7 @@
                 const legacyUrl = settings.icalUrl.trim();
                 if (!settings.calendarFeeds.some((f) => f.url === legacyUrl)) {
                     settings.calendarFeeds.push({
-                        id: crypto.randomUUID(),
+                        id: generateUUID(),
                         name: "Subscribed Calendar",
                         url: legacyUrl,
                         color: "#0A84FF",
@@ -212,7 +213,7 @@
                     : `Calendar ${feeds.length + 1}`);
 
         feeds.push({
-            id: crypto.randomUUID(),
+            id: generateUUID(),
             name: inferredName,
             url: trimmedUrl,
             color: newFeedColor,

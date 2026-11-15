@@ -1,9 +1,10 @@
-import type {
-  CalendarEvent,
-  DashboardNode,
-  NodeModalState,
-  NodeSettings,
-  NodeType,
+import {
+  generateUUID,
+  type CalendarEvent,
+  type DashboardNode,
+  type NodeModalState,
+  type NodeSettings,
+  type NodeType,
 } from "../types";
 import type { AppearanceController } from "./appearance.svelte";
 import type { CalendarController } from "./calendar.svelte";
@@ -80,7 +81,7 @@ export class NodeController {
     const nowIso = new Date().toISOString();
 
     const optimisticNode: DashboardNode = {
-      id: crypto.randomUUID(),
+      id: generateUUID(),
       workspace_id: this.session.activeWorkspace.id,
       parent_id: null,
       sort_order: free.y * 100 + free.x,
@@ -232,7 +233,7 @@ export class NodeController {
 
     const currentEvents = calNode.settings?.events ?? [];
     const newEvent: CalendarEvent = {
-      id: crypto.randomUUID(),
+      id: generateUUID(),
       title,
       time,
       date: todayIso,
@@ -334,7 +335,7 @@ export class NodeController {
 
     const nowIso = new Date().toISOString();
     const optimisticNode: DashboardNode = {
-      id: crypto.randomUUID(),
+      id: generateUUID(),
       workspace_id: this.session.activeWorkspace.id,
       parent_id: null,
       sort_order: free.y * 100 + free.x,
@@ -530,7 +531,7 @@ export class NodeController {
       const feeds = settingsSnapshot.calendarFeeds ?? [];
       if (!feeds.some((f) => f.url === trimmedUrl)) {
         feeds.push({
-          id: crypto.randomUUID(),
+          id: generateUUID(),
           name: finalTitle || "Subscribed Calendar",
           url: trimmedUrl,
           color: "#0A84FF",
@@ -554,7 +555,7 @@ export class NodeController {
 
       const nowIso = new Date().toISOString();
       const optimisticNode: DashboardNode = {
-        id: crypto.randomUUID(),
+        id: generateUUID(),
         workspace_id: this.session.activeWorkspace.id,
         parent_id: this.nodeModal.parent_id,
         sort_order: finalX > 0 ? finalY * 100 + finalX : siblings.length + 1,

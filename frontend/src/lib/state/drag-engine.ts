@@ -1,4 +1,4 @@
-import type { DashboardNode } from "../types";
+import { generateUUID, type DashboardNode } from "../types";
 import { GRID_COLS, GRID_ROWS, RESPONSIVE_MAX_ROWS, type GridRect } from "./constants";
 import { canFitRectAmong, clampToGrid, findClosestSlotAmong, rectsOverlap } from "./grid-math";
 import { apiFetch } from "./session.svelte";
@@ -207,7 +207,7 @@ export async function executeNodeMerge(
   if (targetNode.node_type === "action" && !targetNode.parent_id) {
     const nowIso = new Date().toISOString();
     const createdFolder: DashboardNode = {
-      id: crypto.randomUUID(),
+      id: generateUUID(),
       workspace_id: targetNode.workspace_id,
       parent_id: null,
       sort_order: targetNode.sort_order,

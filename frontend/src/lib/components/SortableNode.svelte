@@ -374,7 +374,7 @@
     onpointerup={clearGestureTimers}
     onpointercancel={clearGestureTimers}
     style={gridStyle}
-    class="relative ios-flip-scene {inDock
+    class="relative {inDock
         ? 'size-14 shrink-0'
         : 'w-full h-full'} {isRootGridNode
         ? 'col-[var(--col-start)/span_var(--col-span)] row-[var(--row-start)/span_var(--row-span)]'
@@ -467,16 +467,22 @@
                 {/if}
             {/if}
 
-            <div class="ios-flip-card {isFlipped ? 'is-flipped' : ''}">
-                <div class="ios-flip-face">
-                    {@render children?.()}
-                </div>
-
-                {#if isFlipped}
-                    <div class="ios-flip-face ios-flip-face-back">
-                        <WidgetBackface {node} />
+            <div class="w-full h-full ios-flip-scene">
+                <div class="ios-flip-card {isFlipped ? 'is-flipped' : ''}">
+                    <div
+                        class="ios-flip-face ios-flip-face-front {isFlipped
+                            ? 'is-flipped'
+                            : ''}"
+                    >
+                        {@render children?.()}
                     </div>
-                {/if}
+
+                    {#if isFlipped}
+                        <div class="ios-flip-face ios-flip-face-back">
+                            <WidgetBackface {node} />
+                        </div>
+                    {/if}
+                </div>
             </div>
         </div>
     </div>
