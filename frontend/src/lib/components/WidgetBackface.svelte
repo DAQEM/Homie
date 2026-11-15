@@ -1,5 +1,14 @@
 <script lang="ts">
-    import { Check, Plus, RotateCcw, Trash2 } from "@lucide/svelte";
+    import {
+        Check,
+        Link2,
+        Loader2,
+        LogOut,
+        Plus,
+        RefreshCw,
+        RotateCcw,
+        Trash2,
+    } from "@lucide/svelte";
     import { dashboard, WIDGET_SIZE_PRESETS } from "../state/dashboard.svelte";
     import type {
         CalendarFeed,
@@ -73,6 +82,15 @@
     let newFeedUrl = $state("");
     let newFeedColor = $state(FEED_COLORS[0]);
 
+    // Vikunja Auth Backface State
+    let vAuthMode = $state<"token" | "password">("token");
+    let vServerUrl = $state("https://try.vikunja.io");
+    let vApiToken = $state("");
+    let vUsername = $state("");
+    let vPassword = $state("");
+    let vTotp = $state("");
+    let vAuthError = $state<string | null>(null);
+
     let sizePresets = $derived(WIDGET_SIZE_PRESETS[node.node_type] ?? []);
     let isCompact = $derived((node.height || 1) === 1);
     let isQuadClock = $derived(
@@ -87,6 +105,9 @@
     $effect(() => {
         if (isQuadClock && (!settings.cities || settings.cities.length < 4)) {
             settings.cities = structuredClone(DEFAULT_QUAD_CITIES);
+        }
+        if (node.node_type === "todo" && !settings.vikunjaFilter) {
+            settings.vikunjaFilter = "all";
         }
         if (node.node_type === "calendar") {
             if (!settings.timezone) {
@@ -152,11 +173,32 @@
         feed.color = FEED_COLORS[(idx + 1) % FEED_COLORS.length];
     }
 
+    async function handleVikunjaConnect() {
+        vAuthError = null;
+        if (!vServerUrl.trim()) {
+            vAuthError = "Server URL is required";
+            return;
+        }
+        const err = await dashboard.vikunja.connect({
+            server_url: vServerUrl.trim(),
+            api_token: vAuthMode === "token" ? vApiToken.trim() : undefined,
+            username: vAuthMode === "password" ? vUsername.trim() : undefined,
+            password: vAuthMode === "password" ? vPassword : undefined,
+            totp_passcode: vAuthMode === "password" ? vTotp.trim() : undefined,
+        });
+        if (err) {
+            vAuthError = err;
+        } else {
+            vApiToken = "";
+            vPassword = "";
+            vTotp = "";
+        }
+    }
+
     async function handleSave(e: SubmitEvent) {
         e.preventDefault();
         e.stopPropagation();
 
-        // Automatically commit any pending feed URL typed into the input row before saving
         if (node.node_type === "calendar" && newFeedUrl.trim() !== "") {
             addFeedRow();
         }
@@ -247,7 +289,9 @@
                     ? "Configure 4-City World Clock"
                     : node.node_type === "calendar"
                       ? "iCal / .ics Calendar Feeds"
-                      : `Configure ${node.node_type.toUpperCase()}`}
+                      : node.node_type === "todo"
+                        ? "Vikunja Tasks Configuration"
+                        : `Configure ${node.node_type.toUpperCase()}`}
             </span>
             <div class="flex items-center gap-1.5">
                 <button
@@ -269,7 +313,269 @@
         </div>
 
         <div class="space-y-2 my-auto text-xs overflow-y-auto pr-0.5">
-            {#if isQuadClock && settings.cities}
+            {#if node.node_type === "todo"}
+                <!-- Vikunja Widget Scope + Connection Panel -->
+                <div class="grid grid-cols-2 gap-1.5">
+                    <label class="block space-y-0.5">
+                        <span
+                            class="text-[10px] font-medium text-white/55 block"
+                        >
+                            Widget Title
+                        </span>
+                        <input
+                            type="text"
+                            required
+                            bind:value={title}
+                            class="w-full ios-input px-2 py-1 text-[11px] text-white"
+                        />
+                    </label>
+                    <label class="block space-y-0.5">
+                        <span
+                            class="text-[10px] font-medium text-white/55 block"
+                        >
+                            Task Scope
+                        </span>
+                        <select
+                            bind:value={settings.vikunjaFilter}
+                            class="w-full ios-input px-2 py-1 text-[11px] text-white"
+                        >
+                            <option value="all" class="bg-[#181920]"
+                                >All Open Tasks</option
+                            >
+                            <option value="today" class="bg-[#181920]"
+                                >Due Today & Overdue</option
+                            >
+                            <option value="upcoming" class="bg-[#181920]"
+                                >Next 7 Days</option
+                            >
+                            <option value="favorites" class="bg-[#181920]"
+                                >Starred / Favorites</option
+                            >
+                            <option value="high_priority" class="bg-[#181920]"
+                                >High Priority</option
+                            >
+                            <option value="project" class="bg-[#181920]"
+                                >Specific Project</option
+                            >
+                            <option value="label" class="bg-[#181920]"
+                                >Specific Label</option
+                            >
+                        </select>
+                    </label>
+                </div>
+
+                {#if dashboard.vikunja.status.connected}
+                    <div class="grid grid-cols-2 gap-1.5">
+                        {#if settings.vikunjaFilter === "project"}
+                            <label class="block space-y-0.5">
+                                <span
+                                    class="text-[10px] font-medium text-white/55 block"
+                                >
+                                    Vikunja Project
+                                </span>
+                                <select
+                                    bind:value={settings.vikunjaProjectId}
+                                    class="w-full ios-input px-2 py-1 text-[11px] text-white"
+                                >
+                                    {#each dashboard.vikunja.writableProjects as proj (proj.id)}
+                                        <option
+                                            value={proj.id}
+                                            class="bg-[#181920]"
+                                        >
+                                            {proj.title}
+                                        </option>
+                                    {/each}
+                                </select>
+                            </label>
+                        {:else if settings.vikunjaFilter === "label"}
+                            <label class="block space-y-0.5">
+                                <span
+                                    class="text-[10px] font-medium text-white/55 block"
+                                >
+                                    Vikunja Label
+                                </span>
+                                <select
+                                    bind:value={settings.vikunjaLabelId}
+                                    class="w-full ios-input px-2 py-1 text-[11px] text-white"
+                                >
+                                    {#each dashboard.vikunja.labels as lbl (lbl.id)}
+                                        <option
+                                            value={lbl.id}
+                                            class="bg-[#181920]"
+                                        >
+                                            {lbl.title}
+                                        </option>
+                                    {/each}
+                                </select>
+                            </label>
+                        {/if}
+
+                        <label
+                            class="{settings.vikunjaFilter !== 'project' &&
+                            settings.vikunjaFilter !== 'label'
+                                ? 'col-span-2'
+                                : ''} block space-y-0.5"
+                        >
+                            <span
+                                class="text-[10px] font-medium text-white/55 block"
+                            >
+                                Default Target Project (New Tasks)
+                            </span>
+                            <select
+                                bind:value={settings.vikunjaDefaultProjectId}
+                                class="w-full ios-input px-2 py-1 text-[11px] text-white"
+                            >
+                                <option value={undefined} class="bg-[#181920]">
+                                    Auto ({dashboard.vikunja.writableProjects[0]
+                                        ?.title ?? "First Project"})
+                                </option>
+                                {#each dashboard.vikunja.writableProjects as proj (proj.id)}
+                                    <option
+                                        value={proj.id}
+                                        class="bg-[#181920]"
+                                    >
+                                        {proj.title}
+                                    </option>
+                                {/each}
+                            </select>
+                        </label>
+                    </div>
+
+                    <!-- Connected Account Status Bar -->
+                    <div
+                        class="ios-nested-surface p-2 rounded-xl flex items-center justify-between gap-2"
+                    >
+                        <div class="min-w-0">
+                            <div
+                                class="text-[11px] font-semibold text-[#30D158] truncate"
+                            >
+                                Connected • @{dashboard.vikunja.status.username}
+                            </div>
+                            <div
+                                class="text-[9.5px] text-white/45 truncate font-mono"
+                            >
+                                {dashboard.vikunja.status.serverUrl}
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-1 shrink-0">
+                            <button
+                                type="button"
+                                onclick={() => void dashboard.vikunja.syncNow()}
+                                title="Sync Now"
+                                class="size-6 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center cursor-pointer"
+                            >
+                                <RefreshCw
+                                    class="size-3 {dashboard.vikunja.isSyncing
+                                        ? 'animate-spin'
+                                        : ''}"
+                                />
+                            </button>
+                            <button
+                                type="button"
+                                onclick={() =>
+                                    void dashboard.vikunja.disconnect()}
+                                title="Disconnect Vikunja"
+                                class="size-6 rounded-lg bg-white/10 hover:bg-destructive/25 text-white/70 hover:text-destructive flex items-center justify-center cursor-pointer"
+                            >
+                                <LogOut class="size-3" />
+                            </button>
+                        </div>
+                    </div>
+                {:else}
+                    <!-- Vikunja Auth Setup Card -->
+                    <div class="ios-nested-surface p-2.5 rounded-xl space-y-2">
+                        <div class="flex items-center justify-between gap-2">
+                            <span
+                                class="text-[10.5px] font-semibold text-white/85 flex items-center gap-1"
+                            >
+                                <Link2 class="size-3 text-primary" />
+                                Connect Vikunja Instance
+                            </span>
+                            <div
+                                class="flex items-center gap-1 p-0.5 rounded-full bg-black/30"
+                            >
+                                <button
+                                    type="button"
+                                    onclick={() => (vAuthMode = "token")}
+                                    class="px-2 py-0.5 rounded-full text-[9.5px] font-semibold cursor-pointer {vAuthMode ===
+                                    'token'
+                                        ? 'bg-white text-black'
+                                        : 'text-white/60'}"
+                                >
+                                    API Token
+                                </button>
+                                <button
+                                    type="button"
+                                    onclick={() => (vAuthMode = "password")}
+                                    class="px-2 py-0.5 rounded-full text-[9.5px] font-semibold cursor-pointer {vAuthMode ===
+                                    'password'
+                                        ? 'bg-white text-black'
+                                        : 'text-white/60'}"
+                                >
+                                    Login
+                                </button>
+                            </div>
+                        </div>
+
+                        <input
+                            type="text"
+                            bind:value={vServerUrl}
+                            placeholder="https://vikunja.example.com"
+                            class="w-full ios-input px-2 py-1 text-[11px] text-white font-mono"
+                        />
+
+                        {#if vAuthMode === "token"}
+                            <input
+                                type="password"
+                                bind:value={vApiToken}
+                                placeholder="Paste Vikunja API Token (tk_...)"
+                                class="w-full ios-input px-2 py-1 text-[11px] text-white font-mono"
+                            />
+                        {:else}
+                            <div class="grid grid-cols-2 gap-1.5">
+                                <input
+                                    type="text"
+                                    bind:value={vUsername}
+                                    placeholder="Username"
+                                    class="ios-input px-2 py-1 text-[11px] text-white"
+                                />
+                                <input
+                                    type="password"
+                                    bind:value={vPassword}
+                                    placeholder="Password"
+                                    class="ios-input px-2 py-1 text-[11px] text-white"
+                                />
+                            </div>
+                            <input
+                                type="text"
+                                bind:value={vTotp}
+                                placeholder="TOTP Code (optional)"
+                                class="w-full ios-input px-2 py-1 text-[11px] text-white"
+                            />
+                        {/if}
+
+                        {#if vAuthError}
+                            <p class="text-[10px] text-[#FF453A]">
+                                {vAuthError}
+                            </p>
+                        {/if}
+
+                        <button
+                            type="button"
+                            disabled={dashboard.vikunja.isConnecting}
+                            onclick={handleVikunjaConnect}
+                            class="w-full py-1 rounded-lg bg-primary text-white text-[11px] font-semibold flex items-center justify-center gap-1.5 hover:brightness-110 disabled:opacity-50 cursor-pointer"
+                        >
+                            {#if dashboard.vikunja.isConnecting}
+                                <Loader2 class="size-3 animate-spin" />
+                                <span>Connecting...</span>
+                            {:else}
+                                <span>Connect & Sync</span>
+                            {/if}
+                        </button>
+                    </div>
+                {/if}
+            {:else if isQuadClock && settings.cities}
                 <!-- 4-City World Clock Grid Configuration (for 4x4 Large Clock) -->
                 <div class="grid grid-cols-2 gap-2">
                     {#each settings.cities.slice(0, 4) as city, idx (idx)}
@@ -372,7 +678,6 @@
                     </label>
                 </div>
 
-                <!-- Existing Subscribed Feeds List -->
                 {#if settings.calendarFeeds && settings.calendarFeeds.length > 0}
                     <div class="space-y-1">
                         <span
@@ -432,7 +737,6 @@
                     </div>
                 {/if}
 
-                <!-- Add New .ics / webcal:// Feed Row -->
                 <div class="ios-nested-surface p-2 rounded-xl space-y-1.5">
                     <div class="flex items-center justify-between">
                         <span class="text-[10px] font-semibold text-white/75">

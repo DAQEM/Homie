@@ -79,6 +79,9 @@ func main() {
 	calendarProvider := integrations.NewCalendarProvider(db, stateEngine)
 	integrations.SpawnSupervised(ctx, calendarProvider, stateEngine, 2*time.Minute)
 
+	vikunjaProvider := integrations.NewVikunjaProvider(db, stateEngine, envelopeCipher)
+	integrations.SpawnSupervised(ctx, vikunjaProvider, stateEngine, 20*time.Second)
+
 	// 5. Mount embedded frontend SPA assets and HTTP router
 	distFS, err := fs.Sub(frontendEmbedFS, "frontend/dist")
 	if err != nil {
@@ -86,7 +89,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	router := api.NewRouter(db, stateEngine, envelopeCipher, calendarProvider, distFS)
+	router := api.NewRouter(db, stateEngine, envelopeCipher, calendarProvider, vikunjaProvider, distFS)
 	srv := &http.Server{
 		Addr:              bindAddr,
 		Handler:           router,

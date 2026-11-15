@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -91,6 +92,7 @@ type Server struct {
 	engine           *state.Engine
 	cipher           *crypto.EnvelopeCipher
 	calendarProvider *integrations.CalendarProvider
+	vikunjaProvider  *integrations.VikunjaProvider
 	frontendFS       fs.FS
 	httpClient       *http.Client
 	iconCache        sync.Map // map[string]cachedIcon
@@ -103,6 +105,7 @@ func NewRouter(
 	engine *state.Engine,
 	cipher *crypto.EnvelopeCipher,
 	calendarProvider *integrations.CalendarProvider,
+	vikunjaProvider *integrations.VikunjaProvider,
 	frontendFS fs.FS,
 ) http.Handler {
 	s := &Server{
@@ -110,6 +113,7 @@ func NewRouter(
 		engine:           engine,
 		cipher:           cipher,
 		calendarProvider: calendarProvider,
+		vikunjaProvider:  vikunjaProvider,
 		frontendFS:       frontendFS,
 		httpClient: &http.Client{
 			Timeout: 3500 * time.Millisecond,
@@ -142,7 +146,17 @@ func NewRouter(
 	mux.HandleFunc("POST /api/v1/integrations/{provider}/auth", s.handleCreateIntegration)
 	mux.HandleFunc("DELETE /api/v1/integrations/{id}", s.handleDeleteIntegration)
 
-	// 5. Embedded SPA Fallback
+	// 5. Vikunja Live Write-Through & Proxy Endpoints
+	mux.HandleFunc("POST /api/v1/vikunja/sync", s.handleVikunjaSync)
+	mux.HandleFunc("POST /api/v1/vikunja/tasks", s.handleVikunjaCreateTask)
+	mux.HandleFunc("PATCH /api/v1/vikunja/tasks/{id}", s.handleVikunjaPatchTask)
+	mux.HandleFunc("DELETE /api/v1/vikunja/tasks/{id}", s.handleVikunjaDeleteTask)
+	mux.HandleFunc("POST /api/v1/vikunja/tasks/{id}/labels", s.handleVikunjaAddLabel)
+	mux.HandleFunc("DELETE /api/v1/vikunja/tasks/{id}/labels/{labelId}", s.handleVikunjaRemoveLabel)
+	mux.HandleFunc("GET /api/v1/vikunja/tasks/{id}/comments", s.handleVikunjaListComments)
+	mux.HandleFunc("POST /api/v1/vikunja/tasks/{id}/comments", s.handleVikunjaAddComment)
+
+	// 6. Embedded SPA Fallback
 	mux.HandleFunc("GET /", s.handleSPA)
 
 	return mux
@@ -758,6 +772,11 @@ func (s *Server) handleCreateIntegration(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	if provider == "vikunja" {
+		s.handleAuthVikunjaIntegration(w, r, input.Credentials)
+		return
+	}
+
 	encryptedCreds, err := s.cipher.Encrypt(input.Credentials)
 	if err != nil {
 		http.Error(w, "failed encrypting credentials", http.StatusInternalServerError)
@@ -782,6 +801,106 @@ func (s *Server) handleCreateIntegration(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusCreated, integration)
 }
 
+func (s *Server) handleAuthVikunjaIntegration(w http.ResponseWriter, r *http.Request, rawCreds json.RawMessage) {
+	var req struct {
+		ServerURL    string `json:"server_url"`
+		APIToken     string `json:"api_token"`
+		Username     string `json:"username"`
+		Password     string `json:"password"`
+		TOTPPasscode string `json:"totp_passcode"`
+	}
+	if err := json.Unmarshal(rawCreds, &req); err != nil {
+		http.Error(w, "invalid Vikunja credentials JSON", http.StatusBadRequest)
+		return
+	}
+
+	canonicalBase, info, err := integrations.DiscoverVikunjaServer(r.Context(), req.ServerURL)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	apiToken := strings.TrimSpace(req.APIToken)
+	if apiToken == "" {
+		if strings.TrimSpace(req.Username) == "" || req.Password == "" {
+			http.Error(w, "provide either an API token or username & password", http.StatusBadRequest)
+			return
+		}
+		tmpClient := integrations.NewVikunjaClient(canonicalBase, "")
+		jwt, err := tmpClient.Login(r.Context(), strings.TrimSpace(req.Username), req.Password, strings.TrimSpace(req.TOTPPasscode))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+			return
+		}
+		tmpClient.Token = jwt
+		apiToken, err = tmpClient.MintScopedAPIToken(r.Context(), "Homie Homescreen")
+		if err != nil {
+			apiToken = jwt
+		}
+	}
+
+	authedClient := integrations.NewVikunjaClient(canonicalBase, apiToken)
+	user, err := authedClient.CurrentUser(r.Context())
+	if err != nil {
+		http.Error(w, fmt.Sprintf("failed verifying Vikunja token: %v", err), http.StatusUnauthorized)
+		return
+	}
+
+	frontendURL := canonicalBase
+	if info != nil && info.FrontendURL != "" {
+		frontendURL = strings.TrimRight(info.FrontendURL, "/")
+	}
+
+	storedCreds, err := json.Marshal(integrations.VikunjaCredentials{
+		ServerURL:   canonicalBase,
+		FrontendURL: frontendURL,
+		APIToken:    apiToken,
+		Username:    user.Username,
+		UserID:      user.ID,
+	})
+	if err != nil {
+		http.Error(w, "failed encoding Vikunja credentials", http.StatusInternalServerError)
+		return
+	}
+
+	encryptedCreds, err := s.cipher.Encrypt(storedCreds)
+	if err != nil {
+		http.Error(w, "failed encrypting Vikunja credentials", http.StatusInternalServerError)
+		return
+	}
+
+	safeSettings, _ := json.Marshal(map[string]any{
+		"server_url":   canonicalBase,
+		"frontend_url": frontendURL,
+		"username":     user.Username,
+		"user_id":      user.ID,
+	})
+
+	var integration models.Integration
+	err = s.db.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Delete(&models.Integration{}, "provider = ?", "vikunja").Error; err != nil {
+			return err
+		}
+		integration = models.Integration{
+			Provider:    "vikunja",
+			Credentials: encryptedCreds,
+			Settings:    safeSettings,
+		}
+		return tx.Create(&integration).Error
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if s.vikunjaProvider != nil {
+		status := s.vikunjaProvider.SyncNow(r.Context())
+		writeJSON(w, http.StatusCreated, status)
+		return
+	}
+	writeJSON(w, http.StatusCreated, integration)
+}
+
 func (s *Server) handleDeleteIntegration(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
@@ -789,11 +908,185 @@ func (s *Server) handleDeleteIntegration(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	var existing models.Integration
+	_ = s.db.WithContext(r.Context()).First(&existing, "id = ?", id).Error
+
 	if err := s.db.WithContext(r.Context()).Delete(&models.Integration{}, "id = ?", id).Error; err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	if existing.Provider == "vikunja" && s.vikunjaProvider != nil {
+		s.vikunjaProvider.ClearState(r.Context())
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleVikunjaSync(w http.ResponseWriter, r *http.Request) {
+	if s.vikunjaProvider == nil {
+		http.Error(w, "vikunja provider unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.vikunjaProvider.SyncNow(r.Context()))
+}
+
+func (s *Server) handleVikunjaCreateTask(w http.ResponseWriter, r *http.Request) {
+	if s.vikunjaProvider == nil {
+		http.Error(w, "vikunja provider unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var input struct {
+		ProjectID   int64   `json:"project_id"`
+		Title       string  `json:"title"`
+		Description string  `json:"description"`
+		Priority    int64   `json:"priority"`
+		DueDate     string  `json:"due_date"`
+		IsFavorite  bool    `json:"is_favorite"`
+		LabelIDs    []int64 `json:"label_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil || strings.TrimSpace(input.Title) == "" || input.ProjectID <= 0 {
+		http.Error(w, "project_id and title are required", http.StatusBadRequest)
+		return
+	}
+	task, err := s.vikunjaProvider.CreateTask(r.Context(), input.ProjectID, integrations.VikunjaTaskCreate{
+		Title:       strings.TrimSpace(input.Title),
+		Description: input.Description,
+		Priority:    input.Priority,
+		DueDate:     input.DueDate,
+		IsFavorite:  input.IsFavorite,
+	}, input.LabelIDs)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, http.StatusCreated, task)
+}
+
+func (s *Server) handleVikunjaPatchTask(w http.ResponseWriter, r *http.Request) {
+	if s.vikunjaProvider == nil {
+		http.Error(w, "vikunja provider unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	taskID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || taskID <= 0 {
+		http.Error(w, "invalid task id", http.StatusBadRequest)
+		return
+	}
+	var patch integrations.VikunjaTaskPatch
+	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+		http.Error(w, "invalid JSON patch", http.StatusBadRequest)
+		return
+	}
+	task, err := s.vikunjaProvider.PatchTask(r.Context(), taskID, patch)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, http.StatusOK, task)
+}
+
+func (s *Server) handleVikunjaDeleteTask(w http.ResponseWriter, r *http.Request) {
+	if s.vikunjaProvider == nil {
+		http.Error(w, "vikunja provider unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	taskID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || taskID <= 0 {
+		http.Error(w, "invalid task id", http.StatusBadRequest)
+		return
+	}
+	if err := s.vikunjaProvider.DeleteTask(r.Context(), taskID); err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleVikunjaAddLabel(w http.ResponseWriter, r *http.Request) {
+	if s.vikunjaProvider == nil {
+		http.Error(w, "vikunja provider unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	taskID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || taskID <= 0 {
+		http.Error(w, "invalid task id", http.StatusBadRequest)
+		return
+	}
+	var body struct {
+		LabelID int64 `json:"label_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.LabelID <= 0 {
+		http.Error(w, "valid label_id is required", http.StatusBadRequest)
+		return
+	}
+	task, err := s.vikunjaProvider.SetTaskLabel(r.Context(), taskID, body.LabelID, true)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, http.StatusOK, task)
+}
+
+func (s *Server) handleVikunjaRemoveLabel(w http.ResponseWriter, r *http.Request) {
+	if s.vikunjaProvider == nil {
+		http.Error(w, "vikunja provider unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	taskID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	labelID, err2 := strconv.ParseInt(r.PathValue("labelId"), 10, 64)
+	if err != nil || err2 != nil || taskID <= 0 || labelID <= 0 {
+		http.Error(w, "invalid task or label id", http.StatusBadRequest)
+		return
+	}
+	task, err := s.vikunjaProvider.SetTaskLabel(r.Context(), taskID, labelID, false)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, http.StatusOK, task)
+}
+
+func (s *Server) handleVikunjaListComments(w http.ResponseWriter, r *http.Request) {
+	if s.vikunjaProvider == nil {
+		http.Error(w, "vikunja provider unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	taskID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || taskID <= 0 {
+		http.Error(w, "invalid task id", http.StatusBadRequest)
+		return
+	}
+	comments, err := s.vikunjaProvider.ListTaskComments(r.Context(), taskID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, http.StatusOK, comments)
+}
+
+func (s *Server) handleVikunjaAddComment(w http.ResponseWriter, r *http.Request) {
+	if s.vikunjaProvider == nil {
+		http.Error(w, "vikunja provider unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	taskID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || taskID <= 0 {
+		http.Error(w, "invalid task id", http.StatusBadRequest)
+		return
+	}
+	var body struct {
+		Comment string `json:"comment"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Comment) == "" {
+		http.Error(w, "comment is required", http.StatusBadRequest)
+		return
+	}
+	comment, err := s.vikunjaProvider.AddTaskComment(r.Context(), taskID, body.Comment)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, http.StatusCreated, comment)
 }
 
 func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {

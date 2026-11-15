@@ -16,6 +16,7 @@
     import ContextMenu from "./lib/components/ContextMenu.svelte";
     import FolderModal from "./lib/components/FolderModal.svelte";
     import CalendarModal from "./lib/components/CalendarModal.svelte";
+    import VikunjaTaskModal from "./lib/components/VikunjaTaskModal.svelte";
     import AppLibraryModal from "./lib/components/AppLibraryModal.svelte";
     import NodeFormModal from "./lib/components/NodeFormModal.svelte";
     import WorkspaceModal from "./lib/components/WorkspaceModal.svelte";
@@ -90,6 +91,7 @@
     let isFullModalRecessed = $derived(
         dashboard.openFolderId !== null ||
             dashboard.openCalendarNodeId !== null ||
+            dashboard.openVikunjaTaskId !== null ||
             dashboard.isSpotlightOpen ||
             dashboard.isAppLibraryOpen,
     );
@@ -196,6 +198,10 @@
                 dashboard.closeSpotlight();
                 return;
             }
+            if (dashboard.openVikunjaTaskId !== null) {
+                dashboard.closeVikunjaModal();
+                return;
+            }
             if (dashboard.openCalendarNodeId) {
                 dashboard.closeCalendarModal();
                 return;
@@ -232,6 +238,7 @@
             e.key === "/" &&
             !dashboard.openFolderId &&
             !dashboard.openCalendarNodeId &&
+            dashboard.openVikunjaTaskId === null &&
             !dashboard.isAppLibraryOpen &&
             !dashboard.isControlCenterOpen &&
             !dashboard.nodeModal.open &&
@@ -251,6 +258,7 @@
         if (
             dashboard.isSpotlightOpen ||
             dashboard.openCalendarNodeId ||
+            dashboard.openVikunjaTaskId !== null ||
             dashboard.isAppLibraryOpen ||
             dashboard.isControlCenterOpen ||
             dashboard.contextMenu.open ||
@@ -274,6 +282,7 @@
         if (
             dashboard.isSpotlightOpen ||
             dashboard.openCalendarNodeId ||
+            dashboard.openVikunjaTaskId !== null ||
             dashboard.isAppLibraryOpen ||
             dashboard.isControlCenterOpen ||
             dashboard.contextMenu.open ||
@@ -308,7 +317,6 @@
             dashboard.updateDirectDrag(e.clientX, e.clientY);
         }
 
-        // 1:1 Pointer / Touch Horizontal Swipe on the Wallpaper Surface
         if (
             isWallpaperPointerDown &&
             !dashboard.activeDragNodeId &&
@@ -379,7 +387,6 @@
                     (n) => n.id === dashboard.activeDragNodeId,
                 );
 
-                // Find if cursor is over a valid Merge / Drop-Into candidate
                 const candidateNode = dashboard.rootNodes.find((n) => {
                     if (n.id === draggedNode?.id) return false;
                     const inBounds =
@@ -421,7 +428,6 @@
                     const u = (exactCol - candidateNode.grid_x) / w;
                     const v = (exactRow - candidateNode.grid_y) / h;
 
-                    // Inner Core Drop Zone: 70% center of multi-cell containers, 60% center of 1x1 icons
                     const edgeMargin = w >= 2 || h >= 2 ? 0.15 : 0.2;
                     const isInsideDropCore =
                         u > edgeMargin &&
@@ -430,7 +436,6 @@
                         v < 1 - edgeMargin;
 
                     if (isInsideDropCore) {
-                        // Hold reflow so the container stays in place to accept the drop!
                         dashboard.holdGridReflowOnTarget();
 
                         if (folderDwellCandidateId !== candidateNode.id) {
@@ -449,8 +454,6 @@
                                 );
                             }, activateDelay);
 
-                            // If user keeps holding over the center for >1050ms without dropping,
-                            // evict the container/icon so it dodges out of the way to make room!
                             folderEvictTimer = setTimeout(() => {
                                 folderEvictTimer = null;
                                 evictedTargetId = candidateNode.id;
@@ -460,7 +463,6 @@
                             }, 1050);
                         }
                     } else {
-                        // Outer Border / Edge Zone: immediately move the container/icon out of the way
                         clearFolderDwellTimer();
                         if (dashboard.folderMergeTargetId) {
                             dashboard.setFolderMergeTarget(null);
@@ -616,6 +618,7 @@
 <ContextMenu />
 <FolderModal />
 <CalendarModal />
+<VikunjaTaskModal />
 <AppLibraryModal />
 <NodeFormModal />
 <WorkspaceModal />

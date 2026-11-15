@@ -30,7 +30,6 @@
         subtitle: string;
         node?: DashboardNode;
         workspaceId?: string;
-        todoId?: string;
         execute: () => void | Promise<void>;
     }
 
@@ -55,15 +54,21 @@
         const lower = q.toLowerCase();
         const list: SpotlightResult[] = [];
 
-        // 1. Check Quick Commands (`todo: ...`, `remind: ...`)
-        if (lower.startsWith("todo:") || lower.startsWith("remind:")) {
-            const taskText = q.replace(/^(todo|remind):\s*/i, "").trim();
+        // 1. Check Quick Commands (`todo: ...`, `remind: ...`, `v: ...`)
+        if (
+            lower.startsWith("todo:") ||
+            lower.startsWith("remind:") ||
+            lower.startsWith("v:")
+        ) {
+            const taskText = q.replace(/^(todo|remind|v):\s*/i, "").trim();
             if (taskText) {
                 list.push({
                     id: "cmd:todo",
                     kind: "command",
-                    title: `Add Reminder: "${taskText}"`,
-                    subtitle: "Instant iPadOS Reminders Quick Action",
+                    title: `Create Vikunja Task: "${taskText}"`,
+                    subtitle: dashboard.vikunja.status.connected
+                        ? "Supports #project, !priority, today / tomorrow"
+                        : "Connect Vikunja in a Tasks widget first",
                     execute: async () => {
                         await dashboard.quickAddReminder(taskText);
                         dashboard.closeSpotlight();
@@ -126,38 +131,35 @@
             }
         }
 
-        // 4. Filter Reminders & Synced .ics Calendar Events when query is non-empty
+        // 4. Filter Live Vikunja Tasks & Synced .ics Calendar Events
         if (lower.length > 0) {
+            for (const vt of dashboard.vikunja.tasks) {
+                const ident = dashboard.vikunja.formatTaskIdentifier(vt);
+                const proj = dashboard.vikunja.getProjectById(vt.project_id);
+                const labelText = (vt.labels ?? [])
+                    .map((l) => l.title)
+                    .join(" ");
+                if (
+                    vt.title.toLowerCase().includes(lower) ||
+                    ident.toLowerCase().includes(lower) ||
+                    (proj?.title.toLowerCase().includes(lower) ?? false) ||
+                    labelText.toLowerCase().includes(lower)
+                ) {
+                    list.push({
+                        id: `vikunja:${vt.id}`,
+                        kind: "todo",
+                        title: vt.title,
+                        subtitle: `${ident}${proj ? ` • ${proj.title}` : ""}${vt.done ? " (Done)" : ""}`,
+                        execute: () => {
+                            dashboard.closeSpotlight();
+                            dashboard.openVikunjaModal(vt.id);
+                        },
+                    });
+                }
+            }
+
             for (const n of dashboard.nodes) {
-                if (n.node_type === "todo" && n.settings?.todos) {
-                    for (const t of n.settings.todos) {
-                        if (t.text.toLowerCase().includes(lower)) {
-                            list.push({
-                                id: `todo:${t.id}`,
-                                kind: "todo",
-                                title: t.text,
-                                subtitle: `${n.title} • ${getWorkspaceName(n.workspace_id)}`,
-                                node: n,
-                                todoId: t.id,
-                                execute: async () => {
-                                    const updated = (
-                                        n.settings?.todos ?? []
-                                    ).map((item) =>
-                                        item.id === t.id
-                                            ? { ...item, done: !item.done }
-                                            : item,
-                                    );
-                                    await dashboard.updateNodeSettings(n.id, {
-                                        ...n.settings,
-                                        todos: updated,
-                                    });
-                                    dashboard.selectWorkspace(n.workspace_id);
-                                    dashboard.closeSpotlight();
-                                },
-                            });
-                        }
-                    }
-                } else if (n.node_type === "calendar") {
+                if (n.node_type === "calendar") {
                     const calEvents = dashboard.getCalendarEventsForNode(n);
                     for (const ev of calEvents) {
                         if (
@@ -298,7 +300,7 @@
                     bind:value={query}
                     oninput={() => (selectedIndex = 0)}
                     onkeydown={handleKeydown}
-                    placeholder="Spotlight Search — apps, calendar events, 'todo: task', or web..."
+                    placeholder="Spotlight Search — apps, Vikunja tasks, 'todo: task', or web..."
                     class="w-full bg-transparent text-base font-medium text-white placeholder:text-white/38 focus:outline-none"
                 />
                 <kbd
@@ -407,8 +409,8 @@
                 </div>
             {:else}
                 <div class="py-8 text-center text-xs text-white/40">
-                    Type to search apps, folders, calendar events, reminders, or
-                    the web.
+                    Type to search apps, folders, Vikunja tasks, calendar
+                    events, or the web.
                 </div>
             {/if}
 
@@ -422,7 +424,8 @@
                     >
                     <span><strong class="text-white/70">↵</strong> Open</span>
                     <span
-                        ><strong class="text-white/70">todo:</strong> Quick Reminder</span
+                        ><strong class="text-white/70">todo:</strong> Quick Vikunja
+                        Task</span
                     >
                 </div>
                 <span><strong class="text-white/70">⇧↵</strong> Web Search</span

@@ -48,7 +48,6 @@
             const s = getNum("second");
             const smoothS = sweepSeconds ? s + (subSecMs % 1000) / 1000 : s;
 
-            const isDay = h >= 6 && h < 19;
             const timeStr = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
             const secStr = String(s).padStart(2, "0");
 
@@ -79,7 +78,6 @@
                 h,
                 m,
                 s,
-                isDay,
                 timeStr,
                 secStr,
                 hourAngle,
@@ -96,7 +94,6 @@
                 h,
                 m,
                 s,
-                isDay: h >= 6 && h < 19,
                 timeStr: `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`,
                 secStr: String(s).padStart(2, "0"),
                 hourAngle: (h % 12) * 30 + m * 0.5,
@@ -163,7 +160,6 @@
 
 {#snippet analogDial(
     sizeClass: string,
-    isDay: boolean,
     hAngle: number,
     mAngle: number,
     sAngle: number,
@@ -175,8 +171,8 @@
                 cx="50"
                 cy="50"
                 r="47"
-                fill={isDay ? "#F5F5F7" : "#1C1C22"}
-                stroke={isDay ? "rgba(0,0,0,0.08)" : "rgba(255,255,255,0.12)"}
+                fill="#1C1C22"
+                stroke="rgba(255,255,255,0.12)"
                 stroke-width="1.5"
             />
 
@@ -189,13 +185,7 @@
                     y1={isCardinal ? "7.5" : "8.5"}
                     x2="50"
                     y2={isCardinal ? "13.5" : "12"}
-                    stroke={isDay
-                        ? isCardinal
-                            ? "#111111"
-                            : "rgba(0,0,0,0.35)"
-                        : isCardinal
-                          ? "#FFFFFF"
-                          : "rgba(255,255,255,0.35)"}
+                    stroke={isCardinal ? "#FFFFFF" : "rgba(255,255,255,0.35)"}
                     stroke-width={isCardinal ? "2" : "1.2"}
                     stroke-linecap="round"
                     transform="rotate({angle} 50 50)"
@@ -207,7 +197,7 @@
                 x="50"
                 y="22.5"
                 text-anchor="middle"
-                fill={isDay ? "#111111" : "#F5F5F7"}
+                fill="#F5F5F7"
                 font-size="9.5"
                 font-weight="700"
             >
@@ -217,7 +207,7 @@
                 x="80"
                 y="53.2"
                 text-anchor="middle"
-                fill={isDay ? "#111111" : "#F5F5F7"}
+                fill="#F5F5F7"
                 font-size="9.5"
                 font-weight="700"
             >
@@ -227,7 +217,7 @@
                 x="50"
                 y="84"
                 text-anchor="middle"
-                fill={isDay ? "#111111" : "#F5F5F7"}
+                fill="#F5F5F7"
                 font-size="9.5"
                 font-weight="700"
             >
@@ -237,7 +227,7 @@
                 x="20"
                 y="53.2"
                 text-anchor="middle"
-                fill={isDay ? "#111111" : "#F5F5F7"}
+                fill="#F5F5F7"
                 font-size="9.5"
                 font-weight="700"
             >
@@ -251,7 +241,7 @@
                     y1="50"
                     x2="50"
                     y2="26"
-                    stroke={isDay ? "#111111" : "#FFFFFF"}
+                    stroke="#FFFFFF"
                     stroke-width="3.2"
                     stroke-linecap="round"
                 />
@@ -264,7 +254,7 @@
                     y1="50"
                     x2="50"
                     y2="15"
-                    stroke={isDay ? "#111111" : "#FFFFFF"}
+                    stroke="#FFFFFF"
                     stroke-width="2.3"
                     stroke-linecap="round"
                 />
@@ -282,12 +272,7 @@
                     stroke-linecap="round"
                 />
                 <circle cx="50" cy="50" r="2.6" fill="#FF9500" />
-                <circle
-                    cx="50"
-                    cy="50"
-                    r="1"
-                    fill={isDay ? "#F5F5F7" : "#1C1C22"}
-                />
+                <circle cx="50" cy="50" r="1" fill="#1C1C22" />
             </g>
         </svg>
     </div>
@@ -312,11 +297,6 @@
             >
                 <div class="flex items-center justify-between gap-1.5">
                     <div class="flex items-center gap-1 min-w-0">
-                        {#if c.isDay}
-                            <Sun class="size-3 text-[#FF9500] shrink-0" />
-                        {:else}
-                            <Moon class="size-3 text-[#64D2FF] shrink-0" />
-                        {/if}
                         <span class="text-xs font-bold tracking-tight truncate">
                             {city.name}
                         </span>
@@ -331,7 +311,6 @@
                 <div class="my-auto flex items-center justify-center">
                     {@render analogDial(
                         "size-[104px]",
-                        c.isDay,
                         c.hourAngle,
                         c.minuteAngle,
                         c.secondAngle,
@@ -354,20 +333,14 @@
 {:else}
     <div
         onclick={(e) => dashboard.isEditMode && dashboard.inspectNode(node, e)}
-        style={primaryClock.isDay
-            ? "background: linear-gradient(165deg, rgba(242, 243, 248, 0.9) 0%, rgba(218, 222, 234, 0.85) 100%);"
-            : ""}
         class="w-full h-full ios-widget-surface p-3.5 flex {isWide
             ? 'items-center gap-4'
-            : 'flex-col justify-between'} overflow-hidden select-none {primaryClock.isDay
-            ? 'text-[#111114]'
-            : 'text-white'}"
+            : 'flex-col justify-between'} overflow-hidden select-none text-white"
     >
         {#if isWide}
             <!-- Medium (4x2) Split World Clock View -->
             {@render analogDial(
                 "size-[132px]",
-                primaryClock.isDay,
                 primaryClock.hourAngle,
                 primaryClock.minuteAngle,
                 primaryClock.secondAngle,
@@ -378,11 +351,6 @@
             >
                 <div class="flex items-center justify-between gap-2">
                     <div class="flex items-center gap-1.5 min-w-0">
-                        {#if primaryClock.isDay}
-                            <Sun class="size-3.5 text-[#FF9500] shrink-0" />
-                        {:else}
-                            <Moon class="size-3.5 text-[#64D2FF] shrink-0" />
-                        {/if}
                         <span class="text-xs font-bold tracking-tight truncate">
                             {node.title}
                         </span>
@@ -393,9 +361,7 @@
                         {/if}
                     </div>
                     <span
-                        class="text-[11px] font-medium ios-tabular-nums {primaryClock.isDay
-                            ? 'text-black/55'
-                            : 'text-white/55'}"
+                        class="text-[11px] font-medium ios-tabular-nums text-white/55"
                     >
                         {primaryClock.offsetLabel}
                     </span>
@@ -417,18 +383,12 @@
                 <div
                     class="flex items-center justify-between gap-2 text-[11px]"
                 >
-                    <span
-                        class="font-medium {primaryClock.isDay
-                            ? 'text-black/65'
-                            : 'text-white/65'}"
-                    >
+                    <span class="font-medium text-white/65">
                         {primaryClock.dateLabel}
                     </span>
                     {#if liveSignalText}
                         <span
-                            class="truncate text-[10px] px-2 py-0.5 rounded-full {primaryClock.isDay
-                                ? 'bg-black/8 text-black/65'
-                                : 'bg-white/10 text-white/65'}"
+                            class="truncate text-[10px] px-2 py-0.5 rounded-full bg-white/10 text-white/65"
                         >
                             {liveSignalText}
                         </span>
@@ -439,19 +399,12 @@
             <!-- Small (2x2) Apple World Clock View -->
             <div class="flex items-center justify-between gap-1.5 w-full">
                 <div class="flex items-center gap-1 min-w-0">
-                    {#if primaryClock.isDay}
-                        <Sun class="size-3 text-[#FF9500] shrink-0" />
-                    {:else}
-                        <Moon class="size-3 text-[#64D2FF] shrink-0" />
-                    {/if}
                     <span class="text-xs font-bold tracking-tight truncate">
                         {node.title}
                     </span>
                 </div>
                 <span
-                    class="text-xs font-semibold ios-tabular-nums {primaryClock.isDay
-                        ? 'text-black/65'
-                        : 'text-white/70'}"
+                    class="text-xs font-semibold ios-tabular-nums text-white/70"
                 >
                     {primaryClock.timeStr}
                 </span>
@@ -460,7 +413,6 @@
             <div class="my-auto flex items-center justify-center">
                 {@render analogDial(
                     "size-[118px]",
-                    primaryClock.isDay,
                     primaryClock.hourAngle,
                     primaryClock.minuteAngle,
                     primaryClock.secondAngle,
@@ -469,9 +421,7 @@
 
             <div class="flex items-center justify-between gap-1 text-[10.5px]">
                 <span
-                    class="font-medium ios-tabular-nums truncate {primaryClock.isDay
-                        ? 'text-black/55'
-                        : 'text-white/55'}"
+                    class="font-medium ios-tabular-nums truncate text-white/55"
                 >
                     {primaryClock.offsetLabel}
                 </span>

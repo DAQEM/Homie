@@ -8,12 +8,80 @@ export interface AppearancePreferences {
   reducedParallax: boolean;
 }
 
-export interface TodoItem {
-  id: string;
-  text: string;
-  date?: string;
-  priority?: boolean;
+export type VikunjaScope =
+  | "all"
+  | "today"
+  | "upcoming"
+  | "favorites"
+  | "high_priority"
+  | "project"
+  | "label";
+
+export interface VikunjaStatus {
+  connected: boolean;
+  integrationId?: string;
+  serverUrl?: string;
+  frontendUrl?: string;
+  username?: string;
+  userId?: number;
+  version?: string;
+  lastSyncedAt?: string;
+  taskCount: number;
+  error?: string;
+}
+
+export interface VikunjaProject {
+  id: number;
+  title: string;
+  description?: string;
+  identifier?: string;
+  hex_color?: string;
+  is_archived?: boolean;
+  is_favorite?: boolean;
+  parent_project_id?: number;
+}
+
+export interface VikunjaLabel {
+  id: number;
+  title: string;
+  hex_color?: string;
+}
+
+export interface VikunjaUser {
+  id: number;
+  username: string;
+  name?: string;
+}
+
+export interface VikunjaTask {
+  id: number;
+  title: string;
+  description?: string;
   done: boolean;
+  done_at?: string;
+  priority: number;
+  project_id: number;
+  index: number;
+  identifier?: string;
+  hex_color?: string;
+  is_favorite: boolean;
+  due_date?: string;
+  start_date?: string;
+  end_date?: string;
+  percent_done: number;
+  labels?: VikunjaLabel[];
+  assignees?: VikunjaUser[];
+  created?: string;
+  updated?: string;
+  url?: string;
+}
+
+export interface VikunjaComment {
+  id: number;
+  comment: string;
+  author?: VikunjaUser;
+  created?: string;
+  updated?: string;
 }
 
 export interface CalendarFeed {
@@ -71,8 +139,12 @@ export interface NodeSettings {
   // Search widget settings
   placeholder?: string;
   engineUrl?: string;
-  // Todo widget settings
-  todos?: TodoItem[];
+  // Vikunja Tasks widget settings (replaces local todos)
+  vikunjaFilter?: VikunjaScope;
+  vikunjaProjectId?: number;
+  vikunjaLabelId?: number;
+  vikunjaDefaultProjectId?: number;
+  vikunjaShowCompleted?: boolean;
   // Calendar widget settings
   events?: CalendarEvent[];
   icalUrl?: string;

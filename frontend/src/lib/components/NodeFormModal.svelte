@@ -94,10 +94,10 @@
         },
         {
             type: "todo",
-            label: "Reminders",
-            subtitle: "Tasks & priority flags",
+            label: "Vikunja Tasks",
+            subtitle: "Live projects, priorities & due dates",
             description:
-                "Stay on top of daily tasks with interactive iOS completion rings and priority flags.",
+                "Real-time two-way Vikunja integration with filtered project/today scopes, quick-add, and task inspection.",
             accent: "bg-[#0A84FF]",
         },
         {
@@ -164,7 +164,7 @@
             container: "Folder",
             clock: "Amsterdam",
             search: "Search",
-            todo: "Reminders",
+            todo: "Vikunja",
             calendar: "Schedule",
         };
         const t = dashboard.nodeModal.node_type;
@@ -198,22 +198,8 @@
                 engineUrl:
                     dashboard.nodeModal.settings.engineUrl ||
                     "https://www.google.com/search?q=",
-                todos: dashboard.nodeModal.settings.todos?.length
-                    ? dashboard.nodeModal.settings.todos
-                    : [
-                          {
-                              id: "p1",
-                              text: "Review design system",
-                              priority: true,
-                              done: false,
-                          },
-                          {
-                              id: "p2",
-                              text: "Ship iPadOS spatial update",
-                              priority: false,
-                              done: true,
-                          },
-                      ],
+                vikunjaFilter:
+                    dashboard.nodeModal.settings.vikunjaFilter || "all",
                 events: dashboard.nodeModal.settings.events?.length
                     ? dashboard.nodeModal.settings.events
                     : [
@@ -484,7 +470,6 @@
                 <div
                     class="flex-1 flex flex-col justify-between p-5 min-w-0 overflow-y-auto"
                 >
-                    <!-- Top Stage Header -->
                     <div
                         class="flex items-start justify-between gap-3 shrink-0"
                     >
@@ -670,7 +655,6 @@
                             </div>
 
                             {#if isQuadClockSelected && dashboard.nodeModal.settings.cities}
-                                <!-- 4-City Configuration Grid for 4x4 World Clock -->
                                 <div class="grid grid-cols-2 gap-2">
                                     {#each dashboard.nodeModal.settings.cities.slice(0, 4) as city, idx (idx)}
                                         <div
@@ -716,7 +700,80 @@
                                         />
                                     </label>
 
-                                    {#if dashboard.nodeModal.node_type === "clock"}
+                                    {#if dashboard.nodeModal.node_type === "todo"}
+                                        <label class="block space-y-1">
+                                            <span
+                                                class="text-[10px] font-medium text-white/60 block"
+                                            >
+                                                Vikunja Scope
+                                            </span>
+                                            <select
+                                                bind:value={
+                                                    dashboard.nodeModal.settings
+                                                        .vikunjaFilter
+                                                }
+                                                class="w-full ios-input px-2.5 py-1.5 text-xs text-white"
+                                            >
+                                                <option
+                                                    value="all"
+                                                    class="bg-[#181920]"
+                                                    >All Open</option
+                                                >
+                                                <option
+                                                    value="today"
+                                                    class="bg-[#181920]"
+                                                    >Today & Overdue</option
+                                                >
+                                                <option
+                                                    value="upcoming"
+                                                    class="bg-[#181920]"
+                                                    >Next 7 Days</option
+                                                >
+                                                <option
+                                                    value="favorites"
+                                                    class="bg-[#181920]"
+                                                    >Starred</option
+                                                >
+                                                <option
+                                                    value="high_priority"
+                                                    class="bg-[#181920]"
+                                                    >High Priority</option
+                                                >
+                                                <option
+                                                    value="project"
+                                                    class="bg-[#181920]"
+                                                    >Project</option
+                                                >
+                                            </select>
+                                        </label>
+
+                                        {#if dashboard.nodeModal.settings.vikunjaFilter === "project" && dashboard.vikunja.writableProjects.length > 0}
+                                            <label class="block space-y-1">
+                                                <span
+                                                    class="text-[10px] font-medium text-white/60 block"
+                                                >
+                                                    Target Project
+                                                </span>
+                                                <select
+                                                    bind:value={
+                                                        dashboard.nodeModal
+                                                            .settings
+                                                            .vikunjaProjectId
+                                                    }
+                                                    class="w-full ios-input px-2.5 py-1.5 text-xs text-white"
+                                                >
+                                                    {#each dashboard.vikunja.writableProjects as proj (proj.id)}
+                                                        <option
+                                                            value={proj.id}
+                                                            class="bg-[#181920]"
+                                                        >
+                                                            {proj.title}
+                                                        </option>
+                                                    {/each}
+                                                </select>
+                                            </label>
+                                        {/if}
+                                    {:else if dashboard.nodeModal.node_type === "clock"}
                                         <label class="block space-y-1">
                                             <span
                                                 class="text-[10px] font-medium text-white/60 block"
@@ -810,7 +867,6 @@
                         </p>
                     {/if}
 
-                    <!-- Bottom Gallery Bar: Size Segmented Picker + "+ Add Widget" Pill -->
                     <div
                         class="flex items-center justify-between gap-3 pt-3 border-t border-white/10 shrink-0"
                     >

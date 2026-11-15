@@ -1,12 +1,14 @@
 <script lang="ts">
     import {
         Activity,
+        CheckCircle2,
         Eye,
         EyeOff,
         Layers,
         LayoutGrid,
         Palette,
         Plus,
+        RefreshCw,
         Search,
         Sparkles,
         Wifi,
@@ -165,6 +167,50 @@
                         <LayoutGrid class="size-4" />
                     </button>
                 </div>
+            </div>
+
+            <!-- Vikunja Sync Pod -->
+            <div
+                class="ios-cc-module p-3 flex items-center justify-between gap-2.5"
+            >
+                <div class="flex items-center gap-2.5 min-w-0">
+                    <div
+                        class="size-8 rounded-full {dashboard.vikunja.status
+                            .connected
+                            ? 'bg-primary'
+                            : 'bg-white/12'} text-white flex items-center justify-center shrink-0"
+                    >
+                        <CheckCircle2 class="size-4" />
+                    </div>
+                    <div class="min-w-0">
+                        <div class="text-xs font-semibold truncate">
+                            {dashboard.vikunja.status.connected
+                                ? `Vikunja • @${dashboard.vikunja.status.username}`
+                                : "Vikunja Disconnected"}
+                        </div>
+                        <div
+                            class="text-[10px] text-white/50 truncate ios-tabular-nums"
+                        >
+                            {dashboard.vikunja.status.connected
+                                ? `${dashboard.vikunja.status.taskCount} open tasks`
+                                : "Flip a Tasks widget to connect"}
+                        </div>
+                    </div>
+                </div>
+                {#if dashboard.vikunja.status.connected}
+                    <button
+                        type="button"
+                        onclick={() => void dashboard.vikunja.syncNow()}
+                        title="Sync Vikunja Now"
+                        class="size-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center shrink-0 cursor-pointer"
+                    >
+                        <RefreshCw
+                            class="size-3.5 {dashboard.vikunja.isSyncing
+                                ? 'animate-spin text-primary'
+                                : ''}"
+                        />
+                    </button>
+                {/if}
             </div>
 
             <!-- Middle Pod: Ambient Wallpaper Studio -->
