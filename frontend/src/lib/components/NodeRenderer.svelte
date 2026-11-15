@@ -7,6 +7,7 @@
     import SearchTile from "./widgets/SearchTile.svelte";
     import TodoTile from "./widgets/TodoTile.svelte";
     import CalendarTile from "./widgets/CalendarTile.svelte";
+    import WeatherTile from "./widgets/WeatherTile.svelte";
 
     interface Props {
         node: DashboardNode;
@@ -42,6 +43,15 @@
         dashboard.cycleSmartStack(node.id, e.deltaY > 0 ? 1 : -1);
     }
 
+    function nonPassiveWheel(el: HTMLElement) {
+        el.addEventListener("wheel", handleStackWheel, { passive: false });
+        return {
+            destroy() {
+                el.removeEventListener("wheel", handleStackWheel);
+            },
+        };
+    }
+
     function selectStackSlice(idx: number, e: MouseEvent) {
         e.stopPropagation();
         slideDirection = idx > activeIdx ? "down" : "up";
@@ -56,6 +66,8 @@
         <ContainerTile node={target} {inDock} {staticPreview} />
     {:else if target.node_type === "clock"}
         <ClockTile node={target} />
+    {:else if target.node_type === "weather"}
+        <WeatherTile node={target} />
     {:else if target.node_type === "search"}
         <SearchTile node={target} />
     {:else if target.node_type === "todo"}
@@ -67,7 +79,7 @@
 
 {#if isSmartStack}
     <div
-        onwheel={{ handleEvent: handleStackWheel, passive: false }}
+        use:nonPassiveWheel
         class="group/stack relative w-full h-full overflow-hidden rounded-[22px] {isStackMergeTarget
             ? 'ring-2 ring-primary scale-[1.03] transition-transform duration-200'
             : ''}"

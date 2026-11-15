@@ -9,6 +9,7 @@ import { session } from "./session.svelte";
 
 export class AppLibraryController {
   appUsageMap = $state<Record<string, number>>({});
+  private syncTimer: ReturnType<typeof setTimeout> | null = null;
 
   recentDockNodes = $derived.by<DashboardNode[]>(() => {
     const dockedIds = new Set(session.dockNodes.map((n) => n.id));
@@ -76,6 +77,23 @@ export class AppLibraryController {
     }
   }
 
+  hydrateFromServer(raw: unknown): void {
+    if (!raw || typeof raw !== "object") return;
+    const serverMap = raw as Record<string, number>;
+    const merged: Record<string, number> = { ...serverMap };
+    for (const [k, v] of Object.entries(this.appUsageMap)) {
+      if (typeof v === "number" && v > (merged[k] ?? 0)) {
+        merged[k] = v;
+      }
+    }
+    this.appUsageMap = merged;
+    try {
+      localStorage.setItem(APP_USAGE_STORAGE_KEY, JSON.stringify(this.appUsageMap));
+    } catch {
+      // Ignore storage quota errors
+    }
+  }
+
   recordAppLaunch(nodeId: string): void {
     this.appUsageMap[nodeId] = Date.now();
     try {
@@ -83,5 +101,15 @@ export class AppLibraryController {
     } catch {
       // Ignore storage quota errors
     }
+
+    if (this.syncTimer) clearTimeout(this.syncTimer);
+    this.syncTimer = setTimeout(() => {
+      this.syncTimer = null;
+      void fetch("/api/v1/preferences/app_usage", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(this.appUsageMap),
+      });
+    }, 600);
   }
 }

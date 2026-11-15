@@ -1,29 +1,43 @@
 import type { DashboardNode } from "../types";
-import type { GridRect } from "./constants";
+import { GRID_COLS, GRID_ROWS, RESPONSIVE_MAX_ROWS, type GridRect } from "./constants";
 import { canFitRectAmong, clampToGrid, findClosestSlotAmong, rectsOverlap } from "./grid-math";
 
 /**
  * Computes non-overlapping 2D grid positions when `activeNodeId` is dragged or resized
- * to `targetRect`, swapping or cascading displaced sibling nodes.
+ * to `targetRect`, swapping or cascading displaced sibling nodes across `cols x rows`.
  */
 export function computeGridReflow(
   allNodes: DashboardNode[],
   rootNodes: DashboardNode[],
   activeNodeId: string,
   targetRect: GridRect,
+  cols = GRID_COLS,
+  baseRects?: Record<string, GridRect>,
 ): Record<string, GridRect> | null {
-  const clampedTarget = clampToGrid(targetRect.x, targetRect.y, targetRect.w, targetRect.h);
+  const rows = cols < GRID_COLS ? RESPONSIVE_MAX_ROWS : GRID_ROWS;
+  const clampedTarget = clampToGrid(
+    targetRect.x,
+    targetRect.y,
+    targetRect.w,
+    targetRect.h,
+    cols,
+    rows,
+  );
+
+  const getNodeRect = (n: DashboardNode): GridRect => {
+    const mapped = baseRects?.[n.id];
+    if (mapped) return mapped;
+    return {
+      x: n.grid_x,
+      y: n.grid_y,
+      w: Math.min(n.width || 1, cols),
+      h: n.height || 1,
+    };
+  };
 
   const activeNode = allNodes.find((n) => n.id === activeNodeId);
   const activeOrigin: GridRect | null =
-    activeNode && !activeNode.parent_id && activeNode.grid_x > 0
-      ? {
-          x: activeNode.grid_x,
-          y: activeNode.grid_y,
-          w: activeNode.width || 1,
-          h: activeNode.height || 1,
-        }
-      : null;
+    activeNode && !activeNode.parent_id && activeNode.grid_x > 0 ? getNodeRect(activeNode) : null;
 
   const others = rootNodes.filter((n) => n.id !== activeNodeId);
 
@@ -34,12 +48,7 @@ export function computeGridReflow(
   const displaced: DashboardNode[] = [];
 
   for (const node of others) {
-    const rect: GridRect = {
-      x: node.grid_x,
-      y: node.grid_y,
-      w: node.width || 1,
-      h: node.height || 1,
-    };
+    const rect = getNodeRect(node);
     if (!rectsOverlap(clampedTarget, rect)) {
       result[node.id] = rect;
       occupied.push(rect);
@@ -50,19 +59,26 @@ export function computeGridReflow(
 
   let pass1Success = true;
   for (const node of displaced) {
-    const w = node.width || 1;
-    const h = node.height || 1;
+    const cur = getNodeRect(node);
 
-    if (activeOrigin && canFitRectAmong({ x: activeOrigin.x, y: activeOrigin.y, w, h }, occupied)) {
-      const swapped = { x: activeOrigin.x, y: activeOrigin.y, w, h };
+    if (
+      activeOrigin &&
+      canFitRectAmong(
+        { x: activeOrigin.x, y: activeOrigin.y, w: cur.w, h: cur.h },
+        occupied,
+        cols,
+        rows,
+      )
+    ) {
+      const swapped = { x: activeOrigin.x, y: activeOrigin.y, w: cur.w, h: cur.h };
       result[node.id] = swapped;
       occupied.push(swapped);
       continue;
     }
 
-    const closest = findClosestSlotAmong(node.grid_x, node.grid_y, w, h, occupied);
+    const closest = findClosestSlotAmong(cur.x, cur.y, cur.w, cur.h, occupied, cols, rows);
     if (closest) {
-      const placedRect = { x: closest.x, y: closest.y, w, h };
+      const placedRect = { x: closest.x, y: closest.y, w: cur.w, h: cur.h };
       result[node.id] = placedRect;
       occupied.push(placedRect);
     } else {
@@ -79,17 +95,23 @@ export function computeGridReflow(
   const cascadeOccupied: GridRect[] = [clampedTarget];
 
   for (const node of others) {
-    const w = node.width || 1;
-    const h = node.height || 1;
-    const currentRect: GridRect = { x: node.grid_x, y: node.grid_y, w, h };
+    const currentRect = getNodeRect(node);
 
-    if (canFitRectAmong(currentRect, cascadeOccupied)) {
+    if (canFitRectAmong(currentRect, cascadeOccupied, cols, rows)) {
       cascadeResult[node.id] = currentRect;
       cascadeOccupied.push(currentRect);
     } else {
-      const closest = findClosestSlotAmong(node.grid_x, node.grid_y, w, h, cascadeOccupied);
+      const closest = findClosestSlotAmong(
+        currentRect.x,
+        currentRect.y,
+        currentRect.w,
+        currentRect.h,
+        cascadeOccupied,
+        cols,
+        rows,
+      );
       if (!closest) return null;
-      const placedRect = { x: closest.x, y: closest.y, w, h };
+      const placedRect = { x: closest.x, y: closest.y, w: currentRect.w, h: currentRect.h };
       cascadeResult[node.id] = placedRect;
       cascadeOccupied.push(placedRect);
     }

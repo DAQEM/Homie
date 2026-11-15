@@ -1,7 +1,14 @@
 import { arrayMove } from "@dnd-kit/helpers";
 import type { DashboardNode, DragEndEventPayload } from "../types";
 import type { AppearanceController } from "./appearance.svelte";
-import { WIDGET_SIZE_PRESETS, type GridRect, type ScreenBounds } from "./constants";
+import {
+  GRID_COLS,
+  GRID_ROWS,
+  RESPONSIVE_MAX_ROWS,
+  WIDGET_SIZE_PRESETS,
+  type GridRect,
+  type ScreenBounds,
+} from "./constants";
 import { computeGridReflow, executeNodeMerge } from "./drag-engine";
 import { clampToGrid, snapToWidgetPreset } from "./grid-math";
 import type { OverlayController } from "./overlays.svelte";
@@ -41,23 +48,17 @@ export class DragController {
     this.stacks = stacks;
   }
 
+  isBusy(): boolean {
+    return Boolean(this.activeDragNodeId || this.resizingNodeId || this.isDirectDragging);
+  }
+
   getEffectiveRect(node: DashboardNode): GridRect {
     if (this.activeDragNodeId === node.id) {
-      return {
-        x: node.grid_x,
-        y: node.grid_y,
-        w: node.width || 1,
-        h: node.height || 1,
-      };
+      return this.session.getNodeGridRect(node);
     }
     const preview = this.previewPositions[node.id];
     if (preview) return preview;
-    return {
-      x: node.grid_x,
-      y: node.grid_y,
-      w: node.width || 1,
-      h: node.height || 1,
-    };
+    return this.session.getNodeGridRect(node);
   }
 
   setDragGrabOffset(colOffset: number, rowOffset: number): void {
@@ -71,7 +72,16 @@ export class DragController {
     activeNodeId: string,
     targetRect: GridRect,
   ): Record<string, GridRect> | null {
-    return computeGridReflow(this.session.nodes, this.session.rootNodes, activeNodeId, targetRect);
+    const cols = this.session.activeGridCols;
+    const baseRects = cols < GRID_COLS ? this.session.responsiveRootRects : undefined;
+    return computeGridReflow(
+      this.session.nodes,
+      this.session.rootNodes,
+      activeNodeId,
+      targetRect,
+      cols,
+      baseRects,
+    );
   }
 
   holdGridReflowOnTarget(): void {
@@ -92,12 +102,15 @@ export class DragController {
     const dragged = this.session.nodes.find((n) => n.id === this.activeDragNodeId);
     if (!dragged) return;
 
-    const w = dragged.parent_id || dragged.grid_x === -1 ? 1 : dragged.width || 1;
-    const h = dragged.parent_id || dragged.grid_y === -1 ? 1 : dragged.height || 1;
+    const cols = this.session.activeGridCols;
+    const rows = cols < GRID_COLS ? RESPONSIVE_MAX_ROWS : GRID_ROWS;
+    const baseRect = this.session.getNodeGridRect(dragged);
+    const w = dragged.parent_id || dragged.grid_x === -1 ? 1 : baseRect.w;
+    const h = dragged.parent_id || dragged.grid_y === -1 ? 1 : baseRect.h;
 
     const targetX = rawCol - Math.min(this.dragGrabOffset.col, w - 1);
     const targetY = rawRow - Math.min(this.dragGrabOffset.row, h - 1);
-    const clamped = clampToGrid(targetX, targetY, w, h);
+    const clamped = clampToGrid(targetX, targetY, w, h, cols, rows);
 
     if (
       this.dropPreview &&
@@ -120,6 +133,7 @@ export class DragController {
     this.dropPreview = null;
     this.previewPositions = {};
     this.folderMergeTargetId = null;
+    this.session.flushPendingSync();
   }
 
   promoteHoldToDirectDrag(
@@ -142,12 +156,7 @@ export class DragController {
 
     const node = this.session.nodes.find((n) => n.id === nodeId);
     if (node && !node.parent_id && node.grid_x > 0) {
-      const rect: GridRect = {
-        x: node.grid_x,
-        y: node.grid_y,
-        w: node.width || 1,
-        h: node.height || 1,
-      };
+      const rect = this.session.getNodeGridRect(node);
       this.dropPreview = rect;
       this.previewPositions = { [node.id]: rect };
     }
@@ -258,12 +267,7 @@ export class DragController {
     const node = this.session.nodes.find((n) => n.id === nodeId);
     if (!node) return;
     this.resizingNodeId = nodeId;
-    const rect: GridRect = {
-      x: node.grid_x,
-      y: node.grid_y,
-      w: node.width || 1,
-      h: node.height || 1,
-    };
+    const rect = this.session.getNodeGridRect(node);
     this.dropPreview = rect;
     this.previewPositions = { [node.id]: rect };
   }
@@ -272,8 +276,11 @@ export class DragController {
     const node = this.session.nodes.find((n) => n.id === nodeId);
     if (!node) return;
 
-    const preset = snapToWidgetPreset(node.node_type, rawW, rawH);
-    const clamped = clampToGrid(node.grid_x, node.grid_y, preset.w, preset.h);
+    const cols = this.session.activeGridCols;
+    const rows = cols < GRID_COLS ? RESPONSIVE_MAX_ROWS : GRID_ROWS;
+    const baseRect = this.session.getNodeGridRect(node);
+    const preset = snapToWidgetPreset(node.node_type, rawW, rawH, cols);
+    const clamped = clampToGrid(baseRect.x, baseRect.y, preset.w, preset.h, cols, rows);
 
     if (
       this.dropPreview &&
@@ -305,7 +312,10 @@ export class DragController {
 
   async setNodeSizePreset(node: DashboardNode, w: number, h: number): Promise<void> {
     this.overlays.closeContextMenu();
-    const clamped = clampToGrid(node.grid_x, node.grid_y, w, h);
+    const cols = this.session.activeGridCols;
+    const rows = cols < GRID_COLS ? RESPONSIVE_MAX_ROWS : GRID_ROWS;
+    const baseRect = this.session.getNodeGridRect(node);
+    const clamped = clampToGrid(baseRect.x, baseRect.y, Math.min(w, cols), h, cols, rows);
     const layout = this.computeReflowedPositions(node.id, clamped);
     if (layout) {
       this.previewPositions = layout;
@@ -320,15 +330,19 @@ export class DragController {
     const presets = WIDGET_SIZE_PRESETS[node.node_type] ?? [];
     if (presets.length <= 1) return;
 
+    const cur = this.session.getNodeGridRect(node);
     const currentIdx = presets.findIndex(
-      (p) => p.w === (node.width || 1) && p.h === (node.height || 1),
+      (p) => Math.min(p.w, this.session.activeGridCols) === cur.w && p.h === cur.h,
     );
     const nextPreset = presets[(currentIdx + 1) % presets.length];
     await this.setNodeSizePreset(node, nextPreset.w, nextPreset.h);
   }
 
   async applyNodeResize(node: DashboardNode, w: number, h: number): Promise<void> {
-    const clamped = clampToGrid(node.grid_x, node.grid_y, w, h);
+    const cols = this.session.activeGridCols;
+    const rows = cols < GRID_COLS ? RESPONSIVE_MAX_ROWS : GRID_ROWS;
+    const baseRect = this.session.getNodeGridRect(node);
+    const clamped = clampToGrid(baseRect.x, baseRect.y, Math.min(w, cols), h, cols, rows);
     const layout = this.computeReflowedPositions(node.id, clamped);
     if (layout) {
       this.previewPositions = layout;
@@ -343,7 +357,59 @@ export class DragController {
       return;
     }
 
+    const cols = this.session.activeGridCols;
     const activeWsId = this.session.activeWorkspace?.id;
+
+    // On <16 column breakpoints (8-col tablet / 4-col mobile), persist breakpoint-specific layout
+    // overrides inside `node.settings.layouts[cols]` so the 16-col desktop layout stays untouched.
+    if (cols < GRID_COLS) {
+      const colKey = String(cols);
+      const patches: { id: string; settings: DashboardNode["settings"] }[] = [];
+
+      for (const [id, rect] of entries) {
+        const node = this.session.nodes.find((n) => n.id === id);
+        if (!node) continue;
+
+        if (!node.settings) node.settings = {};
+        if (!node.settings.layouts) node.settings.layouts = {};
+
+        const prevOv = node.settings.layouts[colKey];
+        const changed =
+          !prevOv ||
+          prevOv.x !== rect.x ||
+          prevOv.y !== rect.y ||
+          prevOv.w !== rect.w ||
+          prevOv.h !== rect.h;
+
+        node.settings.layouts[colKey] = {
+          x: rect.x,
+          y: rect.y,
+          w: rect.w,
+          h: rect.h,
+        };
+
+        if (changed) {
+          patches.push({
+            id: node.id,
+            settings: structuredClone($state.snapshot(node.settings)),
+          });
+        }
+      }
+
+      this.clearDragPreview();
+      this.session.persistSnapshot();
+
+      for (const p of patches) {
+        void fetch(`/api/v1/nodes/${p.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ settings: p.settings }),
+        });
+      }
+      return;
+    }
+
+    // Standard 16-column desktop persistence
     const updates: {
       id: string;
       sort_order: number;
@@ -467,12 +533,7 @@ export class DragController {
     if (this.activeDragNodeId) {
       const node = this.session.nodes.find((n) => n.id === this.activeDragNodeId);
       if (node && !node.parent_id && node.grid_x > 0) {
-        const rect: GridRect = {
-          x: node.grid_x,
-          y: node.grid_y,
-          w: node.width || 1,
-          h: node.height || 1,
-        };
+        const rect = this.session.getNodeGridRect(node);
         this.dropPreview = rect;
         this.previewPositions = { [node.id]: rect };
       }
@@ -681,11 +742,13 @@ export class DragController {
     }
 
     if (targetNode && !targetNode.parent_id && targetNode.grid_x > 0) {
+      const targetRect = this.session.getNodeGridRect(targetNode);
+      const srcRect = this.session.getNodeGridRect(sourceNode);
       const layout = this.computeReflowedPositions(sourceNode.id, {
-        x: targetNode.grid_x,
-        y: targetNode.grid_y,
-        w: sourceNode.width || 1,
-        h: sourceNode.height || 1,
+        x: targetRect.x,
+        y: targetRect.y,
+        w: srcRect.w,
+        h: srcRect.h,
       });
       if (layout) {
         this.previewPositions = layout;

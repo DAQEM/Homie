@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { untrack } from "svelte";
     import {
         AlertCircle,
         Calendar as CalendarIcon,
@@ -22,7 +23,9 @@
     let { node }: Props = $props();
 
     let isComposerOpen = $state(false);
-    let showCompleted = $state(Boolean(node.settings?.vikunjaShowCompleted));
+    let showCompleted = $state(
+        untrack(() => Boolean(node.settings?.vikunjaShowCompleted)),
+    );
     let newText = $state("");
     let quickPriority = $state(0);
     let quickDue = $state<"none" | "today" | "tomorrow">("none");
@@ -270,7 +273,6 @@
 <div
     class="w-full h-full ios-widget-surface p-3.5 flex flex-col gap-2 overflow-hidden select-none"
 >
-    <!-- Header -->
     <div class="flex items-center justify-between gap-2 shrink-0">
         <div class="flex items-center gap-2 min-w-0">
             <div
@@ -369,7 +371,6 @@
     </div>
 
     {#if !isConnected}
-        <!-- Unconfigured Vikunja Onboarding State -->
         <div
             class="flex-1 flex flex-col items-center justify-center text-center gap-2 px-2"
         >
@@ -400,7 +401,6 @@
             {/if}
         </div>
     {:else}
-        <!-- Inline Mac Quick-Add Composer -->
         {#if isComposerOpen && !dashboard.isEditMode}
             <form
                 onsubmit={handleAddTask}
@@ -489,7 +489,6 @@
             </form>
         {/if}
 
-        <!-- Live Vikunja Task List -->
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
@@ -513,7 +512,6 @@
                     class="py-1.5 flex items-center justify-between gap-2 group rounded-lg px-1 -mx-1 hover:bg-white/[0.04] transition-colors cursor-pointer"
                 >
                     <div class="flex items-center gap-2.5 min-w-0 flex-1">
-                        <!-- Circular Priority-Colored Completion Ring -->
                         <button
                             type="button"
                             onclick={(e) => handleRingClick(task, e)}

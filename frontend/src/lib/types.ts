@@ -1,4 +1,11 @@
-export type NodeType = "action" | "container" | "clock" | "search" | "todo" | "calendar";
+export type NodeType =
+  | "action"
+  | "container"
+  | "clock"
+  | "search"
+  | "todo"
+  | "calendar"
+  | "weather";
 
 export type WallpaperPreset = "cupertino" | "aurora" | "solar" | "titanium";
 
@@ -6,6 +13,53 @@ export interface AppearancePreferences {
   wallpaper: WallpaperPreset;
   showIconLabels: boolean;
   reducedParallax: boolean;
+}
+
+export interface NodeHealthSignal {
+  status: "up" | "degraded" | "down";
+  code?: number;
+  latencyMs: number;
+  checkedAt: string;
+  error?: string;
+}
+
+export interface WeatherHourlyPoint {
+  time: string;
+  temperature: number;
+  code: number;
+  isDay: boolean;
+}
+
+export interface WeatherDailyPoint {
+  date: string;
+  code: number;
+  tempMax: number;
+  tempMin: number;
+}
+
+export interface WeatherSignal {
+  location: string;
+  unit: "C" | "F";
+  temperature: number;
+  feelsLike: number;
+  humidity: number;
+  windSpeed: number;
+  code: number;
+  condition: string;
+  isDay: boolean;
+  tempHigh: number;
+  tempLow: number;
+  hourly: WeatherHourlyPoint[];
+  daily: WeatherDailyPoint[];
+  updatedAt: string;
+  error?: string;
+}
+
+export interface ResponsiveRectOverride {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
 }
 
 export type VikunjaScope =
@@ -130,6 +184,14 @@ export interface WorldClockCity {
 }
 
 export interface NodeSettings {
+  // Responsive per-breakpoint coordinate overrides (e.g. "8" for tablet, "4" for mobile)
+  layouts?: Record<string, ResponsiveRectOverride>;
+  // Action health probe settings
+  healthCheck?: boolean;
+  healthIgnoreTLS?: boolean;
+  // Weather widget settings
+  location?: string;
+  tempUnit?: "C" | "F";
   // Clock & Calendar shared timezone setting
   timezone?: string;
   flag?: string;
@@ -139,7 +201,7 @@ export interface NodeSettings {
   // Search widget settings
   placeholder?: string;
   engineUrl?: string;
-  // Vikunja Tasks widget settings (replaces local todos)
+  // Vikunja Tasks widget settings
   vikunjaFilter?: VikunjaScope;
   vikunjaProjectId?: number;
   vikunjaLabelId?: number;
@@ -179,6 +241,7 @@ export interface DashboardNode {
 export interface BootstrapPayload {
   workspaces: Workspace[];
   nodes: DashboardNode[];
+  preferences?: Record<string, unknown>;
   signals: Record<string, unknown>;
 }
 
@@ -219,10 +282,6 @@ export interface AppLibraryCategory {
   nodes: DashboardNode[];
 }
 
-/**
- * Resolves the icon URL through the local Go RAM cache (`/api/v1/icons/{domain}`)
- * so icons load instantaneously with immutable caching and zero external tracking.
- */
 export function getNodeIconSrc(node: DashboardNode): string | null {
   if (node.node_type !== "action") return null;
   if (node.icon && node.icon.trim() !== "") {

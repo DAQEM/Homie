@@ -68,7 +68,7 @@
     let gridStyle = $derived(
         !isRootGridNode
             ? ""
-            : `--col-start: ${effectiveRect.x}; --row-start: ${effectiveRect.y}; --col-span: ${effectiveRect.w}; --row-span: ${effectiveRect.h}; --col-span-sm: ${Math.min(effectiveRect.w, 4)}; --col-span-md: ${Math.min(effectiveRect.w, 8)};`,
+            : `--col-start: ${effectiveRect.x}; --row-start: ${effectiveRect.y}; --col-span: ${effectiveRect.w}; --row-span: ${effectiveRect.h};`,
     );
 
     let directDragStyle = $derived(
@@ -113,7 +113,6 @@
         },
     });
 
-    // Global capture listener while holding so releasing over ContextMenu backdrop always clears timers
     $effect(() => {
         if (!isHoldingGesture) return;
         const onWindowUp = () => clearGestureTimers();
@@ -129,7 +128,6 @@
         };
     });
 
-    // Continuously record the live visual screen rect while @dnd-kit is dragging this node
     $effect(() => {
         if (!draggable.isDragging || !outerEl) return;
         const recordNow = () => {
@@ -162,7 +160,6 @@
         }
     });
 
-    // Full-Cycle Spring Drop Settlement & Sibling Reflow FLIP
     $effect(() => {
         const currentKey = `${effectiveRect.x}:${effectiveRect.y}:${effectiveRect.w}:${effectiveRect.h}`;
         const _settleSeq = dashboard.settlingDrop?.seq;
@@ -246,15 +243,14 @@
     function handlePointerDown(e: PointerEvent) {
         if (e.button !== 0 || isFlipped) return;
 
-        // Prevent child actions inside a container from triggering the parent container's hold timer
         if (inContainer || inDock || inModal) {
             e.stopPropagation();
         }
 
         if (outerEl && isRootGridNode) {
             const rect = outerEl.getBoundingClientRect();
-            const wCols = Math.max(1, node.width || 1);
-            const hRows = Math.max(1, node.height || 1);
+            const wCols = Math.max(1, effectiveRect.w);
+            const hRows = Math.max(1, effectiveRect.h);
             const colOffset = Math.floor(
                 ((e.clientX - rect.left) / rect.width) * wCols,
             );
@@ -292,7 +288,6 @@
         isTactilePressed = true;
         isHoldingGesture = true;
 
-        // Stage 2 (280ms): Foreground Platter Lift & Quick Actions
         quickActionTimer = setTimeout(() => {
             quickActionTimer = null;
             isTactilePressed = false;
@@ -301,7 +296,6 @@
             }
         }, 280);
 
-        // Stage 3 (680ms): Seamless Promotion into Jiggle Mode
         jigglePromoteTimer = setTimeout(() => {
             promoteHoldGesture();
         }, 680);
@@ -314,13 +308,11 @@
             e.clientY - pointerStartPos.y,
         );
 
-        // Moved > 8px before Stage 2 (280ms): user is swiping the page, cancel hold
         if (quickActionTimer && dist > 8) {
             clearGestureTimers();
             return;
         }
 
-        // Moved > 10px during Stage 2 (while Platter Lift is open): promote immediately!
         if (!quickActionTimer && dist > 10) {
             promoteHoldGesture();
         }
@@ -333,8 +325,8 @@
 
         const startX = e.clientX;
         const startY = e.clientY;
-        const startW = node.width || 1;
-        const startH = node.height || 1;
+        const startW = effectiveRect.w;
+        const startH = effectiveRect.h;
         let draggedDistance = 0;
 
         dashboard.startResize(node.id);
@@ -385,7 +377,7 @@
     class="relative ios-flip-scene {inDock
         ? 'size-14 shrink-0'
         : 'w-full h-full'} {isRootGridNode
-        ? 'col-[span_var(--col-span-sm)/span_var(--col-span-sm)] md:col-[span_var(--col-span-md)/span_var(--col-span-md)] row-[span_var(--row-span)/span_var(--row-span)] lg:col-[var(--col-start)/span_var(--col-span)] lg:row-[var(--row-start)/span_var(--row-span)]'
+        ? 'col-[var(--col-start)/span_var(--col-span)] row-[var(--row-start)/span_var(--row-span)]'
         : ''} {isResizing ||
     isFlipped ||
     draggable.isDragging ||
@@ -397,7 +389,7 @@
         {@attach draggable.attach}
         style={directDragStyle}
         class="relative w-full h-full {dashboard.isEditMode && !isFlipped
-            ? 'cursor-grab active:cursor-grabbing'
+            ? 'cursor-grab active:cursor-grabbing touch-none'
             : ''} {draggable.isDragging || isDirectDragTarget
             ? 'pointer-events-none opacity-92 scale-[1.05] z-50 drop-shadow-[0_26px_48px_rgba(0,0,0,0.68)]'
             : ''} {isTactilePressed ? 'ios-tactile-press' : ''}"

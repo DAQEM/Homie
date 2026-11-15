@@ -1,7 +1,9 @@
 <script lang="ts">
     import {
+        Activity,
         Calendar,
         Clock,
+        CloudSun,
         Folder,
         Globe,
         GripHorizontal,
@@ -30,6 +32,7 @@
     import TodoTile from "./widgets/TodoTile.svelte";
     import CalendarTile from "./widgets/CalendarTile.svelte";
     import SearchTile from "./widgets/SearchTile.svelte";
+    import WeatherTile from "./widgets/WeatherTile.svelte";
 
     let formError = $state<string | null>(null);
     let gallerySearch = $state("");
@@ -93,6 +96,14 @@
             accent: "bg-[#FF9F0A]",
         },
         {
+            type: "weather",
+            label: "Weather",
+            subtitle: "Live Open-Meteo forecast",
+            description:
+                "Ambient sky conditions, hourly trend, and 5-day forecast for any city with zero API keys.",
+            accent: "bg-[#64D2FF]",
+        },
+        {
             type: "todo",
             label: "Vikunja Tasks",
             subtitle: "Live projects, priorities & due dates",
@@ -119,9 +130,9 @@
         {
             type: "action",
             label: "App Shortcut",
-            subtitle: "Website icon & auto-title",
+            subtitle: "Website icon & health monitor",
             description:
-                "Pin any web app or bookmark as a tactile iPadOS squircle with automatic icon discovery.",
+                "Pin any web app or homelab service with automatic icon discovery and optional uptime badge.",
             accent: "bg-[#0A84FF]",
         },
         {
@@ -163,6 +174,7 @@
             action: "GitHub",
             container: "Folder",
             clock: "Amsterdam",
+            weather: "Amsterdam",
             search: "Search",
             todo: "Vikunja",
             calendar: "Schedule",
@@ -186,6 +198,8 @@
             width: dashboard.nodeModal.width || DEFAULT_NODE_SIZES[t].w,
             height: dashboard.nodeModal.height || DEFAULT_NODE_SIZES[t].h,
             settings: {
+                location: dashboard.nodeModal.settings.location || "Amsterdam",
+                tempUnit: dashboard.nodeModal.settings.tempUnit || "C",
                 timezone:
                     dashboard.nodeModal.settings.timezone || "Europe/Amsterdam",
                 flag: dashboard.nodeModal.settings.flag || "🇳🇱",
@@ -398,12 +412,10 @@
         class="fixed inset-0 z-50 bg-black/45 backdrop-blur-md flex items-center justify-center p-4 select-none"
     >
         {#if isGalleryMode}
-            <!-- Two-Column iPadOS Widget Gallery Sheet -->
             <form
                 onsubmit={handleSubmit}
                 class="w-full max-w-[800px] h-[560px] max-h-[92vh] ios-modal-surface rounded-[32px] text-card-foreground flex overflow-hidden shadow-2xl ios-context-menu"
             >
-                <!-- Left Sidebar: Search & Widget Families -->
                 <aside
                     class="w-[236px] shrink-0 border-r border-white/10 bg-black/20 p-3.5 flex flex-col gap-3"
                 >
@@ -441,6 +453,8 @@
                                         <Folder class="size-3.5" />
                                     {:else if item.type === "clock"}
                                         <Clock class="size-3.5" />
+                                    {:else if item.type === "weather"}
+                                        <CloudSun class="size-3.5" />
                                     {:else if item.type === "todo"}
                                         <ListTodo class="size-3.5" />
                                     {:else if item.type === "calendar"}
@@ -466,7 +480,6 @@
                     </div>
                 </aside>
 
-                <!-- Right Stage: Live WYSIWYG Preview & Instant Installation -->
                 <div
                     class="flex-1 flex flex-col justify-between p-5 min-w-0 overflow-y-auto"
                 >
@@ -499,9 +512,9 @@
                             dashboard.nodeModal.icon &&
                             dashboard.nodeModal.icon.startsWith("data:"),
                         )}
-                        <div class="my-auto space-y-4">
+                        <div class="my-auto space-y-3.5">
                             <div
-                                class="ios-gallery-stage rounded-[24px] py-5 px-4 flex flex-col items-center justify-center gap-2"
+                                class="ios-gallery-stage rounded-[24px] py-4 px-4 flex flex-col items-center justify-center gap-2"
                             >
                                 <div
                                     style={!hasUpload
@@ -587,6 +600,41 @@
                             </div>
 
                             <div
+                                class="ios-nested-surface px-3 py-2 rounded-xl flex flex-wrap items-center justify-between gap-3"
+                            >
+                                <label
+                                    class="flex items-center gap-2 text-xs text-white/85 cursor-pointer"
+                                >
+                                    <input
+                                        type="checkbox"
+                                        bind:checked={
+                                            dashboard.nodeModal.settings
+                                                .healthCheck
+                                        }
+                                        class="accent-[#30D158] rounded"
+                                    />
+                                    <Activity class="size-3.5 text-[#30D158]" />
+                                    <span>Monitor Live Service Status</span>
+                                </label>
+
+                                {#if dashboard.nodeModal.settings.healthCheck}
+                                    <label
+                                        class="flex items-center gap-1.5 text-[11px] text-white/60 cursor-pointer"
+                                    >
+                                        <input
+                                            type="checkbox"
+                                            bind:checked={
+                                                dashboard.nodeModal.settings
+                                                    .healthIgnoreTLS
+                                            }
+                                            class="accent-primary rounded"
+                                        />
+                                        <span>Ignore Self-Signed TLS</span>
+                                    </label>
+                                {/if}
+                            </div>
+
+                            <div
                                 class="flex items-center justify-between gap-3"
                             >
                                 <label
@@ -617,7 +665,6 @@
                             </div>
                         </div>
                     {:else}
-                        <!-- Live Interactive Widget Preview Stage -->
                         <div class="my-auto space-y-2.5">
                             <div
                                 onpointerdown={handleStagePreviewPointerDown}
@@ -631,6 +678,8 @@
                                 >
                                     {#if previewNode.node_type === "clock"}
                                         <ClockTile node={previewNode} />
+                                    {:else if previewNode.node_type === "weather"}
+                                        <WeatherTile node={previewNode} />
                                     {:else if previewNode.node_type === "todo"}
                                         <TodoTile node={previewNode} />
                                     {:else if previewNode.node_type === "calendar"}
@@ -700,7 +749,49 @@
                                         />
                                     </label>
 
-                                    {#if dashboard.nodeModal.node_type === "todo"}
+                                    {#if dashboard.nodeModal.node_type === "weather"}
+                                        <label class="block space-y-1">
+                                            <span
+                                                class="text-[10px] font-medium text-white/60 block"
+                                            >
+                                                City / Location
+                                            </span>
+                                            <input
+                                                type="text"
+                                                bind:value={
+                                                    dashboard.nodeModal.settings
+                                                        .location
+                                                }
+                                                placeholder="Amsterdam"
+                                                class="w-full ios-input px-2.5 py-1.5 text-xs text-white"
+                                            />
+                                        </label>
+                                        <label class="block space-y-1">
+                                            <span
+                                                class="text-[10px] font-medium text-white/60 block"
+                                            >
+                                                Unit
+                                            </span>
+                                            <select
+                                                bind:value={
+                                                    dashboard.nodeModal.settings
+                                                        .tempUnit
+                                                }
+                                                class="w-full ios-input px-2.5 py-1.5 text-xs text-white"
+                                            >
+                                                <option
+                                                    value="C"
+                                                    class="bg-[#181920]"
+                                                    >Celsius (°C)</option
+                                                >
+                                                <option
+                                                    value="F"
+                                                    class="bg-[#181920]"
+                                                    >Fahrenheit (°F)</option
+                                                >
+                                            </select>
+                                        </label>
+                                    {:else if dashboard.nodeModal.node_type === "todo"}
                                         <label class="block space-y-1">
                                             <span
                                                 class="text-[10px] font-medium text-white/60 block"
@@ -917,7 +1008,6 @@
                 </div>
             </form>
         {:else}
-            <!-- Compact Sheet for Editing an Existing Shortcut/Folder or Adding inside a Folder/Dock -->
             <form
                 onsubmit={handleSubmit}
                 class="max-w-md w-full ios-modal-surface rounded-[30px] text-card-foreground p-6 space-y-4 ios-context-menu"
@@ -982,6 +1072,40 @@
                 </label>
 
                 {#if dashboard.nodeModal.node_type === "action"}
+                    <div
+                        class="ios-nested-surface px-3 py-2 rounded-xl flex flex-wrap items-center justify-between gap-2"
+                    >
+                        <label
+                            class="flex items-center gap-2 text-xs text-white/85 cursor-pointer"
+                        >
+                            <input
+                                type="checkbox"
+                                bind:checked={
+                                    dashboard.nodeModal.settings.healthCheck
+                                }
+                                class="accent-[#30D158] rounded"
+                            />
+                            <Activity class="size-3.5 text-[#30D158]" />
+                            <span>Monitor Live Status</span>
+                        </label>
+
+                        {#if dashboard.nodeModal.settings.healthCheck}
+                            <label
+                                class="flex items-center gap-1.5 text-[11px] text-white/60 cursor-pointer"
+                            >
+                                <input
+                                    type="checkbox"
+                                    bind:checked={
+                                        dashboard.nodeModal.settings
+                                            .healthIgnoreTLS
+                                    }
+                                    class="accent-primary rounded"
+                                />
+                                <span>Ignore TLS</span>
+                            </label>
+                        {/if}
+                    </div>
+
                     <div class="space-y-1.5">
                         <span class="text-xs font-medium text-white/70 block">
                             Custom Squircle Artwork (optional, max 100 KB)

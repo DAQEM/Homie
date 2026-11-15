@@ -25,7 +25,20 @@ export class AppearanceController {
     }
   }
 
-  private persist(): void {
+  hydrateFromServer(raw: unknown): void {
+    if (!raw || typeof raw !== "object") return;
+    const prefs = raw as Partial<AppearancePreferences>;
+    if (prefs.wallpaper) this.wallpaperPreset = prefs.wallpaper;
+    if (typeof prefs.showIconLabels === "boolean") {
+      this.showIconLabels = prefs.showIconLabels;
+    }
+    if (typeof prefs.reducedParallax === "boolean") {
+      this.reducedParallax = prefs.reducedParallax;
+    }
+    this.persistLocal();
+  }
+
+  private persistLocal(): void {
     try {
       localStorage.setItem(
         APPEARANCE_STORAGE_KEY,
@@ -38,6 +51,19 @@ export class AppearanceController {
     } catch {
       // Ignore storage quota errors
     }
+  }
+
+  private persist(): void {
+    this.persistLocal();
+    void fetch("/api/v1/preferences/appearance", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        wallpaper: this.wallpaperPreset,
+        showIconLabels: this.showIconLabels,
+        reducedParallax: this.reducedParallax,
+      }),
+    });
   }
 
   setWallpaperPreset(preset: WallpaperPreset): void {

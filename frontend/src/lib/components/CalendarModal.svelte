@@ -28,7 +28,7 @@
         totalCols: number;
     }
 
-    const HOUR_HEIGHT = 56; // 56px per hour = 1344px for 24 hours
+    const HOUR_HEIGHT = 56;
     const HOURS = Array.from({ length: 24 }, (_, i) => i);
 
     const MONTH_NAMES = [
@@ -115,10 +115,6 @@
         };
     }
 
-    /**
-     * Packs overlapping timed events on a single day into non-overlapping columns
-     * and computes exact vertical pixel coordinates on the 24-hour timeline.
-     */
     function layoutDayTimedEvents(
         events: CalendarEvent[],
     ): PositionedWeekEvent[] {
@@ -205,7 +201,6 @@
     let nowMinutes = $derived(now.getHours() * 60 + now.getMinutes());
     let nowTopPx = $derived((nowMinutes / 60) * HOUR_HEIGHT);
 
-    // Initialize viewed month and selected date when the modal opens
     $effect(() => {
         if (node) {
             const initIso = dashboard.openCalendarInitialDate || todayIso;
@@ -218,7 +213,16 @@
         }
     });
 
-    // Auto-scroll the 24-hour Week View to 07:30 when entering Week View
+    $effect(() => {
+        if (node) {
+            void dashboard.ensureCalendarMonthRangeLoaded(
+                node.id,
+                viewedYear,
+                viewedMonth,
+            );
+        }
+    });
+
     $effect(() => {
         if (viewMode === "week" && weekScrollEl) {
             queueMicrotask(() => {
@@ -250,7 +254,6 @@
         Boolean(node && dashboard.syncingCalendarNodes[node.id]),
     );
 
-    // Distinct .ics feed sources for the filter bar
     let availableFeeds = $derived.by(() => {
         const feeds: { id: string; name: string; color: string }[] = [];
         const seen = new Set<string>();
@@ -287,7 +290,6 @@
         });
     });
 
-    // Map YYYY-MM-DD -> CalendarEvent[]
     let eventsByDate = $derived.by(() => {
         const map = new Map<string, CalendarEvent[]>();
         for (const ev of filteredEvents) {
@@ -299,10 +301,9 @@
         return map;
     });
 
-    // Build 6-week (42-cell) full month grid with leading/trailing days and ISO week numbers
     let monthWeeks = $derived.by(() => {
         const firstOfMonth = new Date(viewedYear, viewedMonth, 1);
-        const leadingDays = (firstOfMonth.getDay() + 6) % 7; // Monday = 0
+        const leadingDays = (firstOfMonth.getDay() + 6) % 7;
         const gridStart = new Date(viewedYear, viewedMonth, 1 - leadingDays);
 
         const weeks: {
@@ -351,7 +352,6 @@
         return weeks;
     });
 
-    // Build 7-day week columns with separate All-Day and positioned Timed events
     let weekColumns = $derived.by(() => {
         const sel = parseIsoDate(selectedDateIso || todayIso);
         const offsetToMonday = (sel.getDay() + 6) % 7;
@@ -395,7 +395,6 @@
         `CW ${getISOWeekNumber(parseIsoDate(selectedDateIso || todayIso))}`,
     );
 
-    // Grouped chronological Agenda items
     let agendaGroups = $derived.by(() => {
         const groups: {
             iso: string;
@@ -528,11 +527,9 @@
             style={morphStyle}
             class="w-full max-w-[1260px] h-[86vh] max-h-[860px] ios-modal-surface rounded-[32px] flex flex-col overflow-hidden shadow-2xl text-white ios-folder-morph"
         >
-            <!-- Top iPadOS Calendar Toolbar -->
             <header
                 class="px-5 py-3.5 border-b border-white/10 flex flex-wrap items-center justify-between gap-3 shrink-0 bg-black/15"
             >
-                <!-- Left: Month & Year Selector + Navigation Steppers -->
                 <div class="flex items-center gap-3">
                     <div class="flex items-center gap-1.5">
                         <select
@@ -617,7 +614,6 @@
                     </div>
                 </div>
 
-                <!-- Center: iPadOS Segmented View Switcher (Month | Week | Agenda) -->
                 <div
                     class="flex items-center gap-1 p-1 rounded-full bg-black/35 border border-white/10"
                 >
@@ -636,7 +632,6 @@
                     {/each}
                 </div>
 
-                <!-- Right: Search, Sync, Feed Config & Close -->
                 <div class="flex items-center gap-2">
                     <div
                         class="ios-input px-3 py-1.5 rounded-full flex items-center gap-1.5 w-44 sm:w-52"
@@ -693,7 +688,6 @@
                 </div>
             </header>
 
-            <!-- Sub-Header: Calendar Feed Filter Pills & Sync Telemetry -->
             {#if availableFeeds.length > 0}
                 <div
                     class="px-5 py-2 border-b border-white/8 bg-black/10 flex items-center justify-between gap-2 overflow-x-auto shrink-0"
@@ -729,20 +723,17 @@
                         <span
                             class="text-[10.5px] text-white/45 ios-tabular-nums shrink-0"
                         >
-                            {syncStatus.totalEvents} synced events
+                            {syncStatus.totalEvents} upcoming events
                         </span>
                     {/if}
                 </div>
             {/if}
 
-            <!-- Main Content Split: Left Calendar Stage + Right Day & Event Inspector -->
             <div
                 class="flex-1 min-h-0 flex flex-col lg:flex-row overflow-hidden"
             >
-                <!-- Left Stage: Month / Week / Agenda View -->
                 <div class="flex-1 min-w-0 flex flex-col overflow-hidden p-4">
                     {#if viewMode === "month"}
-                        <!-- Weekday Column Headers (with CW column) -->
                         <div
                             class="grid grid-cols-[28px_repeat(7,minmax(0,1fr))] pb-2 text-center text-[11px] font-semibold uppercase tracking-wider text-white/45 shrink-0"
                         >
@@ -754,13 +745,11 @@
                             {/each}
                         </div>
 
-                        <!-- 6-Row Month Grid -->
                         <div class="flex-1 min-h-0 grid grid-rows-6 gap-1.5">
                             {#each monthWeeks as week (week.weekNum + ":" + week.days[0].iso)}
                                 <div
                                     class="grid grid-cols-[28px_repeat(7,minmax(0,1fr))] gap-1.5 min-h-0"
                                 >
-                                    <!-- ISO Week Number -->
                                     <div
                                         class="flex items-center justify-center text-[10px] font-mono text-white/25 select-none"
                                     >
@@ -804,11 +793,12 @@
                                                 {/if}
                                             </div>
 
-                                            <!-- Up to 3 Event Pills inside each Month Cell -->
                                             <div
                                                 class="space-y-0.5 overflow-hidden flex-1"
                                             >
                                                 {#each day.events.slice(0, 3) as ev (ev.id)}
+                                                    <!-- svelte-ignore a11y_click_events_have_key_events -->
+                                                    <!-- svelte-ignore a11y_no_static_element_interactions -->
                                                     <div
                                                         onclick={(e) => {
                                                             e.stopPropagation();
@@ -855,15 +845,12 @@
                             {/each}
                         </div>
                     {:else if viewMode === "week"}
-                        <!-- iPadOS 24-Hour Time-Grid Week View with Pinned All-Day Header -->
                         <div
                             class="flex-1 min-h-0 flex flex-col rounded-[20px] border border-white/10 bg-black/20 overflow-hidden"
                         >
-                            <!-- Sticky Top Header: 7 Day Columns -->
                             <div
                                 class="grid grid-cols-[54px_repeat(7,minmax(0,1fr))] border-b border-white/10 bg-white/[0.03] shrink-0"
                             >
-                                <!-- Top-Left Corner: ISO Week Number -->
                                 <div
                                     class="py-2 px-1 flex flex-col items-center justify-center border-r border-white/8 text-[9.5px] font-mono text-white/35"
                                 >
@@ -900,7 +887,6 @@
                                 {/each}
                             </div>
 
-                            <!-- Sticky Pinned All-Day Row at the Top -->
                             <div
                                 class="grid grid-cols-[54px_repeat(7,minmax(0,1fr))] border-b border-white/12 bg-black/25 shrink-0 min-h-[34px]"
                             >
@@ -911,6 +897,8 @@
                                 </div>
 
                                 {#each weekColumns as col (col.iso)}
+                                    <!-- svelte-ignore a11y_click_events_have_key_events -->
+                                    <!-- svelte-ignore a11y_no_static_element_interactions -->
                                     <div
                                         onclick={() => selectDayCell(col.iso)}
                                         class="p-1 border-r last:border-r-0 border-white/8 space-y-1 max-h-[84px] overflow-y-auto cursor-pointer {col.iso ===
@@ -943,7 +931,6 @@
                                 {/each}
                             </div>
 
-                            <!-- Scrollable 24-Hour Time Grid -->
                             <div
                                 bind:this={weekScrollEl}
                                 class="flex-1 min-h-0 overflow-y-auto relative"
@@ -952,7 +939,6 @@
                                     style="height: {24 * HOUR_HEIGHT}px;"
                                     class="relative grid grid-cols-[54px_repeat(7,minmax(0,1fr))]"
                                 >
-                                    <!-- Left Hour Labels Gutter (00:00 .. 23:00) -->
                                     <div
                                         class="relative border-r border-white/10 bg-black/20 select-none"
                                     >
@@ -973,10 +959,11 @@
                                         {/each}
                                     </div>
 
-                                    <!-- 7 Day Timeline Columns -->
                                     {#each weekColumns as col (col.iso)}
                                         {@const isSelected =
                                             col.iso === selectedDateIso}
+                                        <!-- svelte-ignore a11y_click_events_have_key_events -->
+                                        <!-- svelte-ignore a11y_no_static_element_interactions -->
                                         <div
                                             onclick={() =>
                                                 selectDayCell(col.iso)}
@@ -986,7 +973,6 @@
                                                   ? 'bg-black/15'
                                                   : ''}"
                                         >
-                                            <!-- Horizontal Hour & Half-Hour Grid Lines -->
                                             {#each HOURS as hr (hr)}
                                                 <div
                                                     style="top: {hr *
@@ -999,7 +985,6 @@
                                                 </div>
                                             {/each}
 
-                                            <!-- Live Current Time Red Indicator Line on Today -->
                                             {#if col.isToday}
                                                 <div
                                                     style="top: {nowTopPx}px;"
@@ -1014,7 +999,6 @@
                                                 </div>
                                             {/if}
 
-                                            <!-- Positioned Timed Events -->
                                             {#each col.positionedTimedEvents as item (item.event.id)}
                                                 {@const ev = item.event}
                                                 {@const evColor =
@@ -1077,7 +1061,6 @@
                             </div>
                         </div>
                     {:else}
-                        <!-- Chronological Multi-Month Agenda View -->
                         <div
                             class="flex-1 min-h-0 overflow-y-auto space-y-4 pr-1"
                         >
@@ -1171,12 +1154,10 @@
                     {/if}
                 </div>
 
-                <!-- Right Sidebar: Read-Only Selected Day Schedule & Event Details Inspector -->
                 <aside
                     class="w-full lg:w-[350px] shrink-0 border-t lg:border-t-0 lg:border-l border-white/10 bg-black/25 p-4 flex flex-col justify-between gap-3 overflow-y-auto"
                 >
                     <div class="space-y-3 min-h-0 flex-1 flex flex-col">
-                        <!-- Selected Date Header -->
                         <div
                             class="flex items-start justify-between gap-2 border-b border-white/10 pb-3 shrink-0"
                         >
@@ -1205,13 +1186,14 @@
                             </span>
                         </div>
 
-                        <!-- Selected Day Event List -->
                         <div
                             class="flex-1 min-h-0 overflow-y-auto space-y-2 pr-0.5"
                         >
                             {#each selectedDayEvents as ev (ev.id)}
                                 {@const isSelectedEv =
                                     selectedEventId === ev.id}
+                                <!-- svelte-ignore a11y_click_events_have_key_events -->
+                                <!-- svelte-ignore a11y_no_static_element_interactions -->
                                 <div
                                     onclick={() =>
                                         (selectedEventId = isSelectedEv
@@ -1316,7 +1298,6 @@
                         </div>
                     </div>
 
-                    <!-- Footer Hint -->
                     <div
                         class="pt-2.5 border-t border-white/8 flex items-center justify-between text-[10.5px] text-white/40 shrink-0"
                     >

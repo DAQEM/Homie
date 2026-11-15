@@ -59,7 +59,8 @@ type cachedICSFeed struct {
 	fetchedAt    time.Time
 }
 
-// CalendarProvider polls .ics feeds configured on calendar nodes and emits live events to SSE.
+// CalendarProvider polls .ics feeds configured on calendar nodes and emits a compact
+// sliding window over SSE while serving arbitrary historical/future ranges on demand.
 type CalendarProvider struct {
 	db         *gorm.DB
 	engine     *state.Engine
@@ -84,7 +85,6 @@ func (p *CalendarProvider) Name() string {
 }
 
 func (p *CalendarProvider) Initialize(ctx context.Context) error {
-	// Background listener for immediate on-demand sync triggers
 	go func() {
 		for {
 			select {
@@ -114,6 +114,79 @@ func (p *CalendarProvider) SyncNodeNow(ctx context.Context, nodeID uuid.UUID) (*
 	}
 	status := p.syncSingleNode(ctx, node, p.engine, true)
 	return &status, nil
+}
+
+// QueryNodeEvents returns parsed events for an arbitrary [start, end] date range on demand
+// without bloating the persistent SSE / localStorage sliding window.
+func (p *CalendarProvider) QueryNodeEvents(ctx context.Context, nodeID uuid.UUID, start, end time.Time) ([]SyncedCalendarEvent, error) {
+	var node models.Node
+	if err := p.db.WithContext(ctx).First(&node, "id = ? AND node_type = ?", nodeID, "calendar").Error; err != nil {
+		return nil, err
+	}
+
+	var cfg calendarNodeSettings
+	if len(node.Settings) > 0 {
+		_ = json.Unmarshal(node.Settings, &cfg)
+	}
+
+	feeds := extractConfiguredFeeds(cfg)
+	if len(feeds) == 0 {
+		return []SyncedCalendarEvent{}, nil
+	}
+
+	tzName := strings.TrimSpace(cfg.Timezone)
+	if tzName == "" {
+		tzName = "Europe/Amsterdam"
+	}
+	displayLoc := resolveTimezone(tzName, time.Local)
+
+	defaultColors := []string{"#0A84FF", "#30D158", "#FF9F0A", "#BF5AF2", "#FF453A", "#64D2FF"}
+	var allEvents []SyncedCalendarEvent
+
+	for idx, feed := range feeds {
+		if feed.Enabled != nil && !*feed.Enabled {
+			continue
+		}
+		normalizedURL := NormalizeFeedURL(feed.URL)
+		if normalizedURL == "" {
+			continue
+		}
+
+		color := strings.TrimSpace(feed.Color)
+		if color == "" {
+			color = defaultColors[idx%len(defaultColors)]
+		}
+		name := strings.TrimSpace(feed.Name)
+		if name == "" {
+			name = fmt.Sprintf("Calendar %d", idx+1)
+		}
+
+		var rawICS string
+		if val, ok := p.feedCache.Load(normalizedURL); ok {
+			cached := val.(cachedICSFeed)
+			if time.Since(cached.fetchedAt) < 5*time.Minute && cached.rawBody != "" {
+				rawICS = cached.rawBody
+			}
+		}
+		if rawICS == "" {
+			fetched, err := p.fetchICSFeed(ctx, normalizedURL, false)
+			if err != nil {
+				continue
+			}
+			rawICS = fetched
+		}
+
+		parsed, err := ParseICalendar(rawICS, displayLoc, start, end, feed.ID, name, color)
+		if err != nil {
+			continue
+		}
+		allEvents = append(allEvents, parsed...)
+	}
+
+	if allEvents == nil {
+		allEvents = []SyncedCalendarEvent{}
+	}
+	return allEvents, nil
 }
 
 func (p *CalendarProvider) Poll(ctx context.Context, emitter SignalEmitter) error {
@@ -171,9 +244,10 @@ func (p *CalendarProvider) syncSingleNode(
 	displayLoc := resolveTimezone(tzName, time.Local)
 
 	now := time.Now().In(displayLoc)
-	// Expand 5 years back through 5 years ahead so multi-year navigation (e.g. 2025) is fully populated
-	windowStart := time.Date(now.Year()-5, 1, 1, 0, 0, 0, 0, displayLoc)
-	windowEnd := time.Date(now.Year()+5, 12, 31, 23, 59, 59, 0, displayLoc)
+	// Compact SSE sliding window (-30 days through +120 days) keeps SSE & localStorage lean;
+	// older/future ranges are fetched on-demand via GET /api/v1/nodes/{id}/calendar-events.
+	windowStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, displayLoc).AddDate(0, 0, -30)
+	windowEnd := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 0, displayLoc).AddDate(0, 0, 120)
 
 	var (
 		allEvents   []SyncedCalendarEvent
@@ -234,6 +308,10 @@ func (p *CalendarProvider) syncSingleNode(
 			OK:    true,
 			Count: len(parsedEvents),
 		})
+	}
+
+	if allEvents == nil {
+		allEvents = []SyncedCalendarEvent{}
 	}
 
 	status := CalendarSyncStatus{

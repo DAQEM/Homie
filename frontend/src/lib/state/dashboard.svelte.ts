@@ -1,10 +1,12 @@
 import type {
   DashboardNode,
   DragEndEventPayload,
+  NodeHealthSignal,
   NodeSettings,
   NodeType,
   VikunjaTask,
   WallpaperPreset,
+  WeatherSignal,
 } from "../types";
 import { AppearanceController } from "./appearance.svelte";
 import { AppLibraryController } from "./app-library.svelte";
@@ -83,11 +85,22 @@ class DashboardStore {
   }
 
   init(): () => void {
-    return this.session.init(this.paging);
+    return this.session.init(
+      this.paging,
+      (prefs) => {
+        if (prefs.appearance) {
+          this.appearance.hydrateFromServer(prefs.appearance);
+        }
+        if (prefs.app_usage) {
+          this.appLibrary.hydrateFromServer(prefs.app_usage);
+        }
+      },
+      () => this.drag.isBusy(),
+    );
   }
 
   // =========================================================================
-  // Core Session State & Derived Selectors
+  // Core Session State & Derived Responsive Grid Selectors
   // =========================================================================
 
   get now() {
@@ -95,6 +108,15 @@ class DashboardStore {
   }
   get isDocumentVisible() {
     return this.session.isDocumentVisible;
+  }
+  get viewportWidth() {
+    return this.session.viewportWidth;
+  }
+  get activeGridCols() {
+    return this.session.activeGridCols;
+  }
+  get activeGridRows() {
+    return this.session.activeGridRows;
   }
   get workspaces() {
     return this.session.workspaces;
@@ -147,6 +169,58 @@ class DashboardStore {
   }
   findFirstFreeCell(width = 1, height = 1, ignoreNodeId?: string) {
     return this.session.findFirstFreeCell(width, height, ignoreNodeId);
+  }
+
+  // =========================================================================
+  // Live Health & Weather Signals
+  // =========================================================================
+
+  getNodeHealth(nodeId: string): NodeHealthSignal | null {
+    const raw = this.session.signals[`node:health:${nodeId}`];
+    if (raw && typeof raw === "object" && "status" in raw) {
+      return raw as NodeHealthSignal;
+    }
+    return null;
+  }
+
+  getWeatherForNode(node: DashboardNode): WeatherSignal | null {
+    if (node.id === "gallery-preview-node") {
+      return {
+        location: node.settings?.location || node.title || "Amsterdam",
+        unit: node.settings?.tempUnit === "F" ? "F" : "C",
+        temperature: node.settings?.tempUnit === "F" ? 57 : 14,
+        feelsLike: node.settings?.tempUnit === "F" ? 55 : 13,
+        humidity: 68,
+        windSpeed: 14,
+        code: 2,
+        condition: "Partly Cloudy",
+        isDay: true,
+        tempHigh: node.settings?.tempUnit === "F" ? 61 : 16,
+        tempLow: node.settings?.tempUnit === "F" ? 48 : 9,
+        hourly: [
+          { time: "14:00", temperature: 14, code: 2, isDay: true },
+          { time: "15:00", temperature: 15, code: 1, isDay: true },
+          { time: "16:00", temperature: 16, code: 0, isDay: true },
+          { time: "17:00", temperature: 14, code: 1, isDay: true },
+          { time: "18:00", temperature: 12, code: 2, isDay: false },
+          { time: "19:00", temperature: 11, code: 3, isDay: false },
+        ],
+        daily: [
+          { date: "2026-11-15", code: 2, tempMax: 16, tempMin: 9 },
+          { date: "2026-11-16", code: 61, tempMax: 13, tempMin: 8 },
+          { date: "2026-11-17", code: 1, tempMax: 15, tempMin: 7 },
+          { date: "2026-11-18", code: 0, tempMax: 17, tempMin: 8 },
+          { date: "2026-11-19", code: 3, tempMax: 14, tempMin: 9 },
+        ],
+        updatedAt: new Date().toISOString(),
+      };
+    }
+
+    const raw = this.session.signals[`weather:${node.id}`];
+    if (raw && typeof raw === "object" && "temperature" in raw) {
+      return raw as WeatherSignal;
+    }
+    return null;
   }
 
   // =========================================================================
@@ -328,6 +402,9 @@ class DashboardStore {
   syncCalendarNodeNow(nodeId: string) {
     return this.calendar.syncCalendarNodeNow(nodeId);
   }
+  ensureCalendarMonthRangeLoaded(nodeId: string, year: number, monthIndex: number) {
+    return this.calendar.ensureMonthRangeLoaded(nodeId, year, monthIndex);
+  }
 
   get activeStackIndices() {
     return this.stacks.activeStackIndices;
@@ -407,10 +484,10 @@ class DashboardStore {
     this.drag.setDragGrabOffset(colOffset, rowOffset);
   }
   snapToWidgetPreset(nodeType: NodeType, rawW: number, rawH: number): WidgetSizePreset {
-    return snapToWidgetPreset(nodeType, rawW, rawH);
+    return snapToWidgetPreset(nodeType, rawW, rawH, this.activeGridCols);
   }
   clampToGrid(x: number, y: number, width: number, height: number): GridRect {
-    return clampToGrid(x, y, width, height);
+    return clampToGrid(x, y, width, height, this.activeGridCols, this.activeGridRows);
   }
   holdGridReflowOnTarget() {
     this.drag.holdGridReflowOnTarget();
@@ -535,6 +612,9 @@ class DashboardStore {
   }
   togglePinToDock(nodeId: string) {
     return this.nodeCtrl.togglePinToDock(nodeId);
+  }
+  toggleHealthMonitor(nodeId: string) {
+    return this.nodeCtrl.toggleHealthMonitor(nodeId);
   }
   quickAddReminder(text: string) {
     return this.nodeCtrl.quickAddReminder(text);

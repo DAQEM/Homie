@@ -1,14 +1,21 @@
 import type { AppLibraryCategoryId, NodeType } from "../types";
 
-export const STORAGE_KEY = "homie_snapshot_v7";
-export const ETAG_KEY = "homie_etag_v7";
+export const STORAGE_KEY = "homie_snapshot_v8";
+export const ETAG_KEY = "homie_etag_v8";
 export const WORKSPACE_STORAGE_KEY = "homie_active_workspace_id";
 export const APP_USAGE_STORAGE_KEY = "homie_app_usage_v1";
 export const APPEARANCE_STORAGE_KEY = "homie_appearance_v1";
 
 export const GRID_COLS = 16;
 export const GRID_ROWS = 8;
+export const RESPONSIVE_MAX_ROWS = 48;
 export const MAX_ICON_BYTES = 100 * 1024; // 100 KB
+
+export function getGridColsForWidth(width: number): number {
+  if (width >= 1024) return 16;
+  if (width >= 768) return 8;
+  return 4;
+}
 
 export interface WidgetSizePreset {
   label: string;
@@ -26,6 +33,11 @@ export const WIDGET_SIZE_PRESETS: Record<NodeType, WidgetSizePreset[]> = {
     { label: "Large", shortLabel: "L", w: 4, h: 4 },
   ],
   clock: [
+    { label: "Small", shortLabel: "S", w: 2, h: 2 },
+    { label: "Medium", shortLabel: "M", w: 4, h: 2 },
+    { label: "Large", shortLabel: "L", w: 4, h: 4 },
+  ],
+  weather: [
     { label: "Small", shortLabel: "S", w: 2, h: 2 },
     { label: "Medium", shortLabel: "M", w: 4, h: 2 },
     { label: "Large", shortLabel: "L", w: 4, h: 4 },
@@ -51,6 +63,7 @@ export const DEFAULT_NODE_SIZES: Record<NodeType, { w: number; h: number }> = {
   action: { w: 1, h: 1 },
   container: { w: 4, h: 2 },
   clock: { w: 2, h: 2 },
+  weather: { w: 2, h: 2 },
   search: { w: 6, h: 1 },
   todo: { w: 4, h: 2 },
   calendar: { w: 4, h: 2 },

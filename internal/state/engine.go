@@ -18,9 +18,10 @@ import (
 
 // BootstrapPayload is the combined client snapshot served by GET /api/v1/bootstrap.
 type BootstrapPayload struct {
-	Workspaces []models.Workspace `json:"workspaces"`
-	Nodes      []models.Node      `json:"nodes"`
-	Signals    map[string]any     `json:"signals"`
+	Workspaces  []models.Workspace         `json:"workspaces"`
+	Nodes       []models.Node              `json:"nodes"`
+	Preferences map[string]json.RawMessage `json:"preferences"`
+	Signals     map[string]any             `json:"signals"`
 }
 
 // PrecomputedSnapshot holds the serialized and Brotli-compressed structural state in RAM.
@@ -70,8 +71,8 @@ func (e *Engine) LoadSnapshot() *PrecomputedSnapshot {
 }
 
 // RebuildSnapshot queries PostgreSQL via GORM, pre-compresses the structural state
-// with Brotli Quality 11, computes the SHA-256 ETag, and swaps the pointer atomically.
-// Invoked only on startup and structural CRUD mutations.
+// with Brotli Quality 11, computes the SHA-256 ETag, swaps the pointer atomically,
+// and notifies all connected SSE clients so multi-tab / multi-device layouts stay in sync.
 func (e *Engine) RebuildSnapshot(ctx context.Context) error {
 	var workspaces []models.Workspace
 	if err := e.db.WithContext(ctx).Order("created_at ASC").Find(&workspaces).Error; err != nil {
@@ -83,21 +84,52 @@ func (e *Engine) RebuildSnapshot(ctx context.Context) error {
 		return fmt.Errorf("failed querying nodes: %w", err)
 	}
 
-	e.signalsMu.RLock()
+	var prefRows []models.Preference
+	if err := e.db.WithContext(ctx).Order("key ASC").Find(&prefRows).Error; err != nil {
+		return fmt.Errorf("failed querying preferences: %w", err)
+	}
+	preferences := make(map[string]json.RawMessage, len(prefRows))
+	for _, p := range prefRows {
+		if len(p.Value) == 0 {
+			preferences[p.Key] = json.RawMessage(`{}`)
+		} else {
+			preferences[p.Key] = p.Value
+		}
+	}
+
+	// Prune orphaned per-node volatile signals when nodes are deleted
+	activeNodeIDs := make(map[string]bool, len(nodes))
+	for _, n := range nodes {
+		activeNodeIDs[n.ID.String()] = true
+	}
+
+	e.signalsMu.Lock()
+	for k := range e.signals {
+		for _, prefix := range []string{"calendar:events:", "calendar:status:", "node:health:", "weather:"} {
+			if len(k) > len(prefix) && k[:len(prefix)] == prefix {
+				id := k[len(prefix):]
+				if !activeNodeIDs[id] {
+					delete(e.signals, k)
+				}
+			}
+		}
+	}
 	signalsCopy := make(map[string]any, len(e.signals))
 	for k, v := range e.signals {
 		signalsCopy[k] = v
 	}
-	e.signalsMu.RUnlock()
+	e.signalsMu.Unlock()
 
-	// Compute structural ETag strictly from Workspaces + Nodes so ephemeral 5s signal ticks
+	// Compute structural ETag strictly from Workspaces + Nodes + Preferences so ephemeral signal ticks
 	// never invalidate the client's 304 Not Modified structural cache.
 	structuralBytes, err := json.Marshal(struct {
-		Workspaces []models.Workspace `json:"workspaces"`
-		Nodes      []models.Node      `json:"nodes"`
+		Workspaces  []models.Workspace         `json:"workspaces"`
+		Nodes       []models.Node              `json:"nodes"`
+		Preferences map[string]json.RawMessage `json:"preferences"`
 	}{
-		Workspaces: workspaces,
-		Nodes:      nodes,
+		Workspaces:  workspaces,
+		Nodes:       nodes,
+		Preferences: preferences,
 	})
 	if err != nil {
 		return fmt.Errorf("failed marshaling structural state: %w", err)
@@ -106,9 +138,10 @@ func (e *Engine) RebuildSnapshot(ctx context.Context) error {
 	etag := fmt.Sprintf(`"%s"`, hex.EncodeToString(hash[:16]))
 
 	payload := BootstrapPayload{
-		Workspaces: workspaces,
-		Nodes:      nodes,
-		Signals:    signalsCopy,
+		Workspaces:  workspaces,
+		Nodes:       nodes,
+		Preferences: preferences,
+		Signals:     signalsCopy,
 	}
 
 	rawJSON, err := json.Marshal(payload)
@@ -125,11 +158,16 @@ func (e *Engine) RebuildSnapshot(ctx context.Context) error {
 		return fmt.Errorf("failed closing brotli writer: %w", err)
 	}
 
+	prevETag := e.snapshot.Load().ETag
 	e.snapshot.Store(&PrecomputedSnapshot{
 		ETag:        etag,
 		RawJSON:     rawJSON,
 		BrotliBytes: brBuf.Bytes(),
 	})
+
+	if prevETag != etag {
+		e.EmitSignal(ctx, "system:snapshot:etag", etag)
+	}
 
 	return nil
 }
@@ -173,7 +211,7 @@ func (e *Engine) CurrentSignalDeltas() [][]byte {
 
 // SubscribeSSE registers a new real-time SSE listener channel.
 func (e *Engine) SubscribeSSE() (chan []byte, func()) {
-	ch := make(chan []byte, 32)
+	ch := make(chan []byte, 48)
 	e.clientsMu.Lock()
 	e.clients[ch] = struct{}{}
 	e.clientsMu.Unlock()

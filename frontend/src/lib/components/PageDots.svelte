@@ -6,7 +6,7 @@
     let showLabels = $derived(isHovered || dashboard.isEditMode);
 </script>
 
-{#if dashboard.workspaces.length > 0}
+{#if dashboard.workspaces.length > 0 || dashboard.isEditMode}
     <div
         class="fixed bottom-[92px] left-0 right-0 z-40 flex justify-center px-4 pointer-events-none select-none"
     >
@@ -55,7 +55,7 @@
                 </div>
             {/each}
 
-            {#if dashboard.isEditMode}
+            {#if dashboard.isEditMode || dashboard.workspaces.length === 0}
                 <button
                     type="button"
                     onclick={() => (dashboard.isWorkspaceModalOpen = true)}

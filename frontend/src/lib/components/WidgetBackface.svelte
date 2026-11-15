@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { untrack } from "svelte";
     import {
         Check,
         Link2,
@@ -32,16 +33,22 @@
         "#64D2FF",
     ];
 
-    const DEFAULT_QUAD_CITIES: WorldClockCity[] = [
-        {
-            name: node.title || "Amsterdam",
-            timezone: node.settings?.timezone || "Europe/Amsterdam",
-            flag: node.settings?.flag || "🇳🇱",
-        },
-        { name: "Cupertino", timezone: "America/Los_Angeles", flag: "🇺🇸" },
-        { name: "New York", timezone: "America/New_York", flag: "🇺🇸" },
-        { name: "Tokyo", timezone: "Asia/Tokyo", flag: "🇯🇵" },
-    ];
+    function buildDefaultQuadCities(target: DashboardNode): WorldClockCity[] {
+        return [
+            {
+                name: target.title || "Amsterdam",
+                timezone: target.settings?.timezone || "Europe/Amsterdam",
+                flag: target.settings?.flag || "🇳🇱",
+            },
+            {
+                name: "Cupertino",
+                timezone: "America/Los_Angeles",
+                flag: "🇺🇸",
+            },
+            { name: "New York", timezone: "America/New_York", flag: "🇺🇸" },
+            { name: "Tokyo", timezone: "Asia/Tokyo", flag: "🇯🇵" },
+        ];
+    }
 
     const POPULAR_TIMEZONES = [
         "Europe/Amsterdam",
@@ -71,18 +78,17 @@
         "UTC",
     ];
 
-    let title = $state(node.title);
-    let selectedW = $state(node.width || 2);
-    let selectedH = $state(node.height || 2);
+    let title = $state(untrack(() => node.title));
+    let selectedW = $state(untrack(() => node.width || 2));
+    let selectedH = $state(untrack(() => node.height || 2));
     let settings = $state<NodeSettings>(
-        structuredClone($state.snapshot(node.settings ?? {})),
+        untrack(() => structuredClone($state.snapshot(node.settings ?? {}))),
     );
 
     let newFeedName = $state("");
     let newFeedUrl = $state("");
     let newFeedColor = $state(FEED_COLORS[0]);
 
-    // Vikunja Auth Backface State
     let vAuthMode = $state<"token" | "password">("token");
     let vServerUrl = $state("https://try.vikunja.io");
     let vApiToken = $state("");
@@ -104,7 +110,12 @@
 
     $effect(() => {
         if (isQuadClock && (!settings.cities || settings.cities.length < 4)) {
-            settings.cities = structuredClone(DEFAULT_QUAD_CITIES);
+            settings.cities = buildDefaultQuadCities(node);
+        }
+        if (node.node_type === "weather") {
+            if (!settings.location)
+                settings.location = node.title || "Amsterdam";
+            if (!settings.tempUnit) settings.tempUnit = "C";
         }
         if (node.node_type === "todo" && !settings.vikunjaFilter) {
             settings.vikunjaFilter = "all";
@@ -209,6 +220,11 @@
                 settings.cities[0].timezone.trim() || settings.timezone;
             settings.flag = settings.cities[0].flag;
         }
+
+        if (node.node_type === "weather" && settings.location?.trim()) {
+            title = settings.location.trim();
+        }
+
         await dashboard.saveFlippedWidget(node.id, {
             title,
             width: selectedW,
@@ -240,7 +256,7 @@
         : 'p-3.5 flex flex-col justify-between gap-2'} overflow-y-auto select-none text-white"
 >
     {#if isCompact}
-        <!-- Compact Single-Row Backface for 4x1 / 6x1 / 8x1 Search Bar Widgets -->
+        <!-- Compact Single-Row Backface for Search Bar Widgets -->
         <input
             type="text"
             bind:value={settings.placeholder}
@@ -278,7 +294,6 @@
             Done
         </button>
     {:else}
-        <!-- Multi-Row Backface Inspector for 2x2 / 4x2 / 4x4 Widgets -->
         <div
             class="flex items-center justify-between gap-2 border-b border-white/10 pb-2 shrink-0"
         >
@@ -287,11 +302,13 @@
             >
                 {isQuadClock
                     ? "Configure 4-City World Clock"
-                    : node.node_type === "calendar"
-                      ? "iCal / .ics Calendar Feeds"
-                      : node.node_type === "todo"
-                        ? "Vikunja Tasks Configuration"
-                        : `Configure ${node.node_type.toUpperCase()}`}
+                    : node.node_type === "weather"
+                      ? "Weather Location"
+                      : node.node_type === "calendar"
+                        ? "iCal / .ics Calendar Feeds"
+                        : node.node_type === "todo"
+                          ? "Vikunja Tasks Configuration"
+                          : `Configure ${node.node_type.toUpperCase()}`}
             </span>
             <div class="flex items-center gap-1.5">
                 <button
@@ -313,8 +330,50 @@
         </div>
 
         <div class="space-y-2 my-auto text-xs overflow-y-auto pr-0.5">
-            {#if node.node_type === "todo"}
-                <!-- Vikunja Widget Scope + Connection Panel -->
+            {#if node.node_type === "weather"}
+                <label class="block space-y-1">
+                    <span class="text-[10px] font-medium text-white/55 block">
+                        City / Location
+                    </span>
+                    <input
+                        type="text"
+                        required
+                        bind:value={settings.location}
+                        placeholder="e.g. Amsterdam, Tokyo, New York"
+                        class="w-full ios-input px-2.5 py-1.5 text-xs text-white"
+                    />
+                </label>
+
+                <div class="flex items-center justify-between pt-1">
+                    <span class="text-[10px] font-medium text-white/55">
+                        Temperature Unit
+                    </span>
+                    <div
+                        class="flex items-center gap-1 p-0.5 rounded-full bg-black/30 border border-white/8"
+                    >
+                        <button
+                            type="button"
+                            onclick={() => (settings.tempUnit = "C")}
+                            class="px-2.5 py-0.5 rounded-full text-[10px] font-semibold cursor-pointer {settings.tempUnit !==
+                            'F'
+                                ? 'bg-white text-black'
+                                : 'text-white/60 hover:text-white'}"
+                        >
+                            °C
+                        </button>
+                        <button
+                            type="button"
+                            onclick={() => (settings.tempUnit = "F")}
+                            class="px-2.5 py-0.5 rounded-full text-[10px] font-semibold cursor-pointer {settings.tempUnit ===
+                            'F'
+                                ? 'bg-white text-black'
+                                : 'text-white/60 hover:text-white'}"
+                        >
+                            °F
+                        </button>
+                    </div>
+                </div>
+            {:else if node.node_type === "todo"}
                 <div class="grid grid-cols-2 gap-1.5">
                     <label class="block space-y-0.5">
                         <span
@@ -441,7 +500,6 @@
                         </label>
                     </div>
 
-                    <!-- Connected Account Status Bar -->
                     <div
                         class="ios-nested-surface p-2 rounded-xl flex items-center justify-between gap-2"
                     >
@@ -482,7 +540,6 @@
                         </div>
                     </div>
                 {:else}
-                    <!-- Vikunja Auth Setup Card -->
                     <div class="ios-nested-surface p-2.5 rounded-xl space-y-2">
                         <div class="flex items-center justify-between gap-2">
                             <span
@@ -576,7 +633,6 @@
                     </div>
                 {/if}
             {:else if isQuadClock && settings.cities}
-                <!-- 4-City World Clock Grid Configuration (for 4x4 Large Clock) -->
                 <div class="grid grid-cols-2 gap-2">
                     {#each settings.cities.slice(0, 4) as city, idx (idx)}
                         <div
@@ -647,7 +703,6 @@
                     </div>
                 </div>
             {:else if node.node_type === "calendar"}
-                <!-- Calendar iCal / .ics Multi-Feed Configuration -->
                 <div class="grid grid-cols-2 gap-1.5">
                     <label class="block space-y-0.5">
                         <span

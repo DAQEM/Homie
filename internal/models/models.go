@@ -57,3 +57,14 @@ type Integration struct {
 func (Integration) TableName() string {
 	return "integrations"
 }
+
+// Preference stores cross-device user settings (appearance, app usage, etc.) in PostgreSQL.
+type Preference struct {
+	Key       string          `gorm:"type:text;primaryKey" json:"key"`
+	Value     json.RawMessage `gorm:"type:jsonb;not null;default:'{}'" json:"value"`
+	UpdatedAt time.Time       `gorm:"autoUpdateTime" json:"updated_at"`
+}
+
+func (Preference) TableName() string {
+	return "preferences"
+}

@@ -20,6 +20,26 @@
     let brandGradient = $derived(getNodeBrandGradient(node));
     let isMergeTarget = $derived(dashboard.folderMergeTargetId === node.id);
 
+    let health = $derived(
+        node.settings?.healthCheck ? dashboard.getNodeHealth(node.id) : null,
+    );
+
+    let healthColorClass = $derived.by(() => {
+        if (!health) return "bg-white/40";
+        if (health.status === "up")
+            return "bg-[#30D158] shadow-[0_0_8px_#30D158]";
+        if (health.status === "degraded")
+            return "bg-[#FF9F0A] shadow-[0_0_8px_#FF9F0A]";
+        return "bg-[#FF453A] shadow-[0_0_8px_#FF453A]";
+    });
+
+    let healthTooltip = $derived.by(() => {
+        if (!health) return "";
+        const label = health.status.toUpperCase();
+        if (health.error) return `${node.title} — ${label} (${health.error})`;
+        return `${node.title} — ${label}${health.code ? ` HTTP ${health.code}` : ""} • ${health.latencyMs}ms`;
+    });
+
     function handleClick(e: MouseEvent) {
         if (dashboard.isEditMode) {
             e.preventDefault();
@@ -34,6 +54,7 @@
     href={dashboard.isEditMode ? undefined : (node.url ?? "#")}
     target={dashboard.isEditMode ? undefined : "_blank"}
     rel="noopener noreferrer"
+    title={healthTooltip || node.title}
     onclick={handleClick}
     class="group relative w-full h-full flex flex-col items-center {inDock
         ? 'justify-center'
@@ -44,6 +65,13 @@
             class="pointer-events-none absolute -top-9 left-1/2 -translate-x-1/2 z-50 px-2.5 py-1 rounded-full ios-glass-pill text-[11px] font-medium text-white whitespace-nowrap opacity-0 group-hover:opacity-100 -translate-y-0.5 group-hover:translate-y-0 transition-all duration-150"
         >
             {node.title}
+            {#if health}
+                <span class="ml-1 text-[9.5px] opacity-75">
+                    ({health.status === "up"
+                        ? `${health.latencyMs}ms`
+                        : health.status})
+                </span>
+            {/if}
         </span>
     {/if}
 
@@ -108,6 +136,14 @@
                 />
             </svg>
         </div>
+
+        <!-- Live Service Health Indicator Dot -->
+        {#if node.settings?.healthCheck && !dashboard.isEditMode}
+            <span
+                title={healthTooltip || "Checking health..."}
+                class="absolute -top-0.5 -right-0.5 z-30 size-2.5 rounded-full ring-2 ring-[#0b0d14] {healthColorClass} transition-colors duration-300"
+            ></span>
+        {/if}
     </div>
 
     {#if !inDock && dashboard.showIconLabels}

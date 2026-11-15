@@ -7,6 +7,13 @@ import type { OverlayController } from "./overlays.svelte";
 import type { PagingController } from "./paging.svelte";
 import type { SessionStore } from "./session.svelte";
 
+function persistWorkspaceSelection(id: string): void {
+  if (typeof sessionStorage !== "undefined") {
+    sessionStorage.setItem(WORKSPACE_STORAGE_KEY, id);
+  }
+  localStorage.setItem(WORKSPACE_STORAGE_KEY, id);
+}
+
 export class WorkspaceController {
   private session: SessionStore;
   private paging: PagingController;
@@ -48,7 +55,7 @@ export class WorkspaceController {
         const targetWs = this.session.workspaces[nextIdx];
         if (targetWs && targetWs.id !== this.session.activeWorkspaceId) {
           this.session.activeWorkspaceId = targetWs.id;
-          localStorage.setItem(WORKSPACE_STORAGE_KEY, targetWs.id);
+          persistWorkspaceSelection(targetWs.id);
           this.overlays.resetFolderImmediate();
           this.overlays.closeCalendarModal();
           this.overlays.flippedNodeId = null;
@@ -81,7 +88,7 @@ export class WorkspaceController {
     if (id !== this.session.activeWorkspace?.id) {
       this.paging.pageSlideDirection = newIndex > oldIndex ? "right" : "left";
       this.session.activeWorkspaceId = id;
-      localStorage.setItem(WORKSPACE_STORAGE_KEY, id);
+      persistWorkspaceSelection(id);
       this.overlays.resetFolderImmediate();
       this.overlays.closeCalendarModal();
       this.overlays.flippedNodeId = null;

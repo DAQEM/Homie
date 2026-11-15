@@ -31,7 +31,6 @@
 
     let todayIso = $derived(toIsoDate(todayYear, todayMonth, todayDay));
 
-    // Interactive month/year/day navigation state inside the widget
     let navYear = $state<number | null>(null);
     let navMonth = $state<number | null>(null);
     let selectedDay = $state<number | null>(null);
@@ -46,7 +45,16 @@
     let activeIso = $derived(toIsoDate(viewedYear, viewedMonth, activeDay));
     let isViewingToday = $derived(activeIso === todayIso);
 
-    // Synced .ics feed events (or gallery preview fallback)
+    $effect(() => {
+        if (node.id !== "gallery-preview-node") {
+            void dashboard.ensureCalendarMonthRangeLoaded(
+                node.id,
+                viewedYear,
+                viewedMonth,
+            );
+        }
+    });
+
     let allEvents = $derived<CalendarEvent[]>(
         dashboard.getCalendarEventsForNode(node),
     );
@@ -64,14 +72,12 @@
     let isWide = $derived((node.width || 2) >= 4);
     let isLarge = $derived((node.width || 2) >= 4 && (node.height || 2) >= 4);
 
-    // Events for the active selected day
     let dayEvents = $derived(
         allEvents.filter((ev) =>
             ev.date ? ev.date === activeIso : isViewingToday,
         ),
     );
 
-    // Upcoming events later in the viewed month
     let upcomingInViewedMonth = $derived.by(() => {
         const prefix = `${viewedYear}-${String(viewedMonth + 1).padStart(2, "0")}-`;
         return allEvents
@@ -84,7 +90,6 @@
             .slice(0, isLarge ? 6 : 3);
     });
 
-    // Up to 3 colored event dots per day in the viewed month
     let dayDotsMap = $derived.by(() => {
         const map = new Map<number, string[]>();
         for (const ev of allEvents) {
@@ -134,11 +139,10 @@
             .toUpperCase(),
     );
 
-    // Build monthly calendar grid for 4x2 / 4x4 layout
     let miniMonthDays = $derived.by(() => {
         const firstDay = new Date(viewedYear, viewedMonth, 1).getDay();
         const daysInMonth = new Date(viewedYear, viewedMonth + 1, 0).getDate();
-        const leadingBlanks = (firstDay + 6) % 7; // Monday-first
+        const leadingBlanks = (firstDay + 6) % 7;
         const cells: (number | null)[] = [];
         for (let i = 0; i < leadingBlanks; i++) cells.push(null);
         for (let d = 1; d <= daysInMonth; d++) cells.push(d);
@@ -209,7 +213,6 @@
         : 'flex-col gap-2'} overflow-hidden select-none"
 >
     {#if isWide}
-        <!-- Left Column: Apple Calendar Date Header & Interactive Multi-Month Grid -->
         <div
             class="{isLarge
                 ? 'w-[184px]'
@@ -251,7 +254,6 @@
                 {/if}
             </div>
 
-            <!-- Interactive Month Switcher + Mini Calendar Grid -->
             <div class="space-y-1.5 my-auto">
                 <div class="flex items-center justify-between gap-1">
                     <span
@@ -333,7 +335,6 @@
             </div>
         </div>
     {:else}
-        <!-- Small (2x2) Header: Weekday + Date + Day Steppers + Sync & Expand Buttons -->
         <div class="flex items-start justify-between shrink-0">
             <div>
                 <div
@@ -424,7 +425,6 @@
         </div>
     {/if}
 
-    <!-- Right / Bottom Column: Read-Only .ics Event Timeline -->
     <div class="flex-1 min-w-0 flex flex-col justify-between gap-1.5 h-full">
         {#if isWide}
             <div class="flex items-center justify-between gap-1.5 shrink-0">
@@ -506,14 +506,12 @@
                     ></span>
 
                     <div class="min-w-0 flex-1 space-y-0.5">
-                        <!-- Full-width Event Title (wraps up to 2 lines, never squeezed by time) -->
                         <div
                             class="text-xs font-semibold text-white/95 leading-snug line-clamp-2 break-words"
                         >
                             {ev.title}
                         </div>
 
-                        <!-- Secondary Metadata Line: Time + Feed Name + Location -->
                         <div
                             class="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] ios-vibrant-secondary ios-tabular-nums"
                         >

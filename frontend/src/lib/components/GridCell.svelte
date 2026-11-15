@@ -23,5 +23,5 @@
 <div
     {@attach droppable.attach}
     style="grid-column: {x}; grid-row: {y};"
-    class="hidden lg:block w-full h-full pointer-events-auto select-none"
+    class="block w-full h-full pointer-events-auto select-none"
 ></div>

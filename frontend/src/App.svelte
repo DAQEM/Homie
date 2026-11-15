@@ -1,10 +1,7 @@
 <script lang="ts">
     import { DragDropProvider } from "@dnd-kit/svelte";
-    import {
-        GRID_COLS,
-        GRID_ROWS,
-        dashboard,
-    } from "./lib/state/dashboard.svelte";
+    import { Plus } from "@lucide/svelte";
+    import { dashboard } from "./lib/state/dashboard.svelte";
     import AmbientWallpaper from "./lib/components/ui/AmbientWallpaper.svelte";
     import Header from "./lib/components/Header.svelte";
     import GridCell from "./lib/components/GridCell.svelte";
@@ -24,7 +21,7 @@
 
     $effect(() => dashboard.init());
 
-    // Capture-phase pointer listener so @dnd-kit's stopPropagation() cannot swallow drag coordinates
+    // Capture-phase pointer listener & non-passive wheel paging listener
     $effect(() => {
         const onCaptureMove = (e: PointerEvent) => handlePointerMove(e);
         const onCaptureUp = (e: PointerEvent) => {
@@ -48,6 +45,9 @@
         window.addEventListener("pointercancel", onCaptureUp, {
             capture: true,
         });
+        window.addEventListener("wheel", handleHorizontalWheel, {
+            passive: false,
+        });
         return () => {
             window.removeEventListener("pointermove", onCaptureMove, {
                 capture: true,
@@ -58,6 +58,7 @@
             window.removeEventListener("pointercancel", onCaptureUp, {
                 capture: true,
             });
+            window.removeEventListener("wheel", handleHorizontalWheel);
         };
     });
 
@@ -74,10 +75,19 @@
     let lastPointerSwipeX = 0;
     let lastPointerSwipeTime = 0;
 
+    // Native touch swipe state for smooth iPad / tablet / mobile workspace paging
+    let touchSwipeStart = { x: 0, y: 0 };
+    let isTouchTracking = false;
+    let isTouchSwipingPage = false;
+    let lastTouchX = 0;
+    let lastTouchTime = 0;
+
     let cells = $derived.by(() => {
+        const cols = dashboard.activeGridCols;
+        const rows = dashboard.activeGridRows;
         const list: { x: number; y: number; occupied: boolean }[] = [];
-        for (let y = 1; y <= GRID_ROWS; y++) {
-            for (let x = 1; x <= GRID_COLS; x++) {
+        for (let y = 1; y <= rows; y++) {
+            for (let x = 1; x <= cols; x++) {
                 list.push({
                     x,
                     y,
@@ -134,6 +144,7 @@
     }
 
     function handleBackgroundPointerDown(e: PointerEvent) {
+        if (e.pointerType === "touch") return;
         if (e.button !== 0 || !isBackgroundTarget(e.target)) return;
         wallpaperDownPos = { x: e.clientX, y: e.clientY };
         isWallpaperPointerDown = true;
@@ -151,6 +162,78 @@
                 }
             }, 420);
         }
+    }
+
+    function handleViewportTouchStart(e: TouchEvent) {
+        if (
+            e.touches.length !== 1 ||
+            dashboard.isEditMode ||
+            dashboard.flippedNodeId ||
+            dashboard.workspaces.length <= 1 ||
+            dashboard.activeDragNodeId ||
+            dashboard.resizingNodeId
+        ) {
+            isTouchTracking = false;
+            return;
+        }
+
+        const target = e.target as HTMLElement | null;
+        if (target?.closest("input, textarea, select, [data-no-swipe]")) {
+            isTouchTracking = false;
+            return;
+        }
+
+        const t = e.touches[0];
+        touchSwipeStart = { x: t.clientX, y: t.clientY };
+        lastTouchX = t.clientX;
+        lastTouchTime = performance.now();
+        isTouchTracking = true;
+        isTouchSwipingPage = false;
+    }
+
+    function handleViewportTouchMove(e: TouchEvent) {
+        if (!isTouchTracking || e.touches.length !== 1) return;
+        const t = e.touches[0];
+        const totalDx = t.clientX - touchSwipeStart.x;
+        const totalDy = t.clientY - touchSwipeStart.y;
+
+        if (!isTouchSwipingPage) {
+            if (
+                Math.abs(totalDy) > 16 &&
+                Math.abs(totalDy) > Math.abs(totalDx)
+            ) {
+                isTouchTracking = false;
+                return;
+            }
+            if (
+                Math.abs(totalDx) > 14 &&
+                Math.abs(totalDx) > Math.abs(totalDy) * 1.25
+            ) {
+                isTouchSwipingPage = true;
+                dashboard.beginPageSwipe();
+                lastTouchX = t.clientX;
+                lastTouchTime = performance.now();
+            } else {
+                return;
+            }
+        }
+
+        const now = performance.now();
+        const dt = Math.max(8, now - lastTouchTime);
+        const stepDx = t.clientX - lastTouchX;
+        lastTouchX = t.clientX;
+        lastTouchTime = now;
+
+        const deltaPages = -stepDx / Math.max(window.innerWidth || 768, 320);
+        dashboard.updatePageSwipe(deltaPages, dt);
+    }
+
+    function handleViewportTouchEnd() {
+        if (isTouchSwipingPage) {
+            dashboard.endPageSwipe();
+        }
+        isTouchTracking = false;
+        isTouchSwipingPage = false;
     }
 
     function handleBackgroundClick(e: MouseEvent) {
@@ -373,7 +456,8 @@
                 e.clientY <= rect.bottom + 40;
 
             if (isInsideGrid) {
-                const colWidth = rect.width / GRID_COLS;
+                const activeCols = dashboard.activeGridCols;
+                const colWidth = rect.width / activeCols;
                 const rowHeight = 116;
                 const relX = e.clientX - rect.left;
                 const relY = e.clientY - rect.top;
@@ -386,31 +470,36 @@
                 const draggedNode = dashboard.nodes.find(
                     (n) => n.id === dashboard.activeDragNodeId,
                 );
+                const draggedType = draggedNode?.node_type;
+                const isDraggedAction = draggedType === "action";
+                const isDraggedWidget = Boolean(
+                    draggedType &&
+                    draggedType !== "action" &&
+                    draggedType !== "container",
+                );
 
                 const candidateNode = dashboard.rootNodes.find((n) => {
                     if (n.id === draggedNode?.id) return false;
+                    const nRect = dashboard.getEffectiveRect(n);
                     const inBounds =
-                        rawCol >= n.grid_x &&
-                        rawCol < n.grid_x + (n.width || 1) &&
-                        rawRow >= n.grid_y &&
-                        rawRow < n.grid_y + (n.height || 1);
+                        rawCol >= nRect.x &&
+                        rawCol < nRect.x + nRect.w &&
+                        rawRow >= nRect.y &&
+                        rawRow < nRect.y + nRect.h;
                     if (!inBounds) return false;
 
-                    if (draggedNode?.node_type === "action") {
+                    if (isDraggedAction) {
                         return (
                             n.node_type === "action" ||
                             n.node_type === "container"
                         );
                     }
 
-                    const isDraggedWidget =
-                        draggedNode &&
-                        draggedNode.node_type !== "action" &&
-                        draggedNode.node_type !== "container";
                     const isTargetWidget =
                         n.node_type !== "action" && n.node_type !== "container";
 
                     return Boolean(
+                        draggedNode &&
                         isDraggedWidget &&
                         isTargetWidget &&
                         (draggedNode.width || 2) === (n.width || 2) &&
@@ -423,12 +512,12 @@
                 }
 
                 if (candidateNode && evictedTargetId !== candidateNode.id) {
-                    const w = candidateNode.width || 1;
-                    const h = candidateNode.height || 1;
-                    const u = (exactCol - candidateNode.grid_x) / w;
-                    const v = (exactRow - candidateNode.grid_y) / h;
+                    const cRect = dashboard.getEffectiveRect(candidateNode);
+                    const u = (exactCol - cRect.x) / cRect.w;
+                    const v = (exactRow - cRect.y) / cRect.h;
 
-                    const edgeMargin = w >= 2 || h >= 2 ? 0.15 : 0.2;
+                    const edgeMargin =
+                        cRect.w >= 2 || cRect.h >= 2 ? 0.15 : 0.2;
                     const isInsideDropCore =
                         u > edgeMargin &&
                         u < 1 - edgeMargin &&
@@ -512,10 +601,7 @@
     }
 </script>
 
-<svelte:window
-    onkeydown={handleGlobalKeydown}
-    onwheel={{ handleEvent: handleHorizontalWheel, passive: false }}
-/>
+<svelte:window onkeydown={handleGlobalKeydown} />
 
 <AmbientWallpaper />
 
@@ -536,15 +622,42 @@
         <Header />
     </section>
 
+    {#if dashboard.workspaces.length === 0}
+        <section class="max-w-md mx-auto mt-20 px-4 text-center select-none">
+            <div class="ios-modal-surface rounded-[30px] p-8 space-y-4">
+                <h2 class="text-xl font-semibold text-white ios-tight-tracking">
+                    Welcome to Homie
+                </h2>
+                <p class="text-xs text-white/60 leading-relaxed">
+                    Create your first Home Screen page to start pinning apps,
+                    widgets, calendars, and Vikunja tasks.
+                </p>
+                <button
+                    type="button"
+                    onclick={() => (dashboard.isWorkspaceModalOpen = true)}
+                    class="inline-flex items-center gap-1.5 rounded-full bg-primary text-white px-4 py-2 text-xs font-semibold shadow-md hover:brightness-110 active:scale-95 transition-all cursor-pointer"
+                >
+                    <Plus class="size-3.5 stroke-[2.5]" />
+                    <span>Create Home Screen</span>
+                </button>
+            </div>
+        </section>
+    {/if}
+
     <DragDropProvider
         onDragStart={dashboard.handleDragStart}
         onDragOver={dashboard.handleDragOver}
         onDragEnd={dashboard.handleDragEnd}
     >
         <!-- Continuous Horizontal Spatial Viewport -->
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
             data-wallpaper-surface="true"
-            class="relative w-full overflow-x-clip"
+            ontouchstart={handleViewportTouchStart}
+            ontouchmove={handleViewportTouchMove}
+            ontouchend={handleViewportTouchEnd}
+            ontouchcancel={handleViewportTouchEnd}
+            class="relative w-full overflow-x-clip touch-pan-y"
         >
             <div
                 data-wallpaper-surface="true"
@@ -586,14 +699,14 @@
                                             .w}; grid-row: {dashboard
                                             .dropPreview.y} / span {dashboard
                                             .dropPreview.h};"
-                                        class="hidden lg:block pointer-events-none z-0 ios-drop-ghost"
+                                        class="block pointer-events-none z-0 ios-drop-ghost"
                                     ></div>
                                 {/if}
                             {:else}
                                 <div
                                     aria-hidden="true"
-                                    style="grid-column: 1 / -1; grid-row: 1 / span {GRID_ROWS};"
-                                    class="hidden lg:block pointer-events-none"
+                                    style="grid-column: 1 / -1; grid-row: 1 / span {dashboard.activeGridRows};"
+                                    class="pointer-events-none"
                                 ></div>
                             {/if}
 

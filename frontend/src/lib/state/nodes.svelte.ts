@@ -18,6 +18,7 @@ const DEFAULT_TITLE_MAP: Record<NodeType, string> = {
   action: "Untitled",
   container: "Folder",
   clock: "Amsterdam",
+  weather: "Amsterdam",
   search: "Search",
   todo: "Vikunja",
   calendar: "Calendar",
@@ -144,6 +145,24 @@ export class NodeController {
     } else {
       await this.drag.pinNodeToDock(node);
     }
+  }
+
+  async toggleHealthMonitor(nodeId: string): Promise<void> {
+    this.overlays.closeContextMenu();
+    const node = this.session.nodes.find((n) => n.id === nodeId);
+    if (!node || node.node_type !== "action") return;
+
+    const nextEnabled = !node.settings?.healthCheck;
+    const nextSettings: NodeSettings = {
+      ...(node.settings ?? {}),
+      healthCheck: nextEnabled,
+    };
+
+    if (!nextEnabled) {
+      delete this.session.signals[`node:health:${node.id}`];
+    }
+
+    await this.updateNodeSettings(node.id, nextSettings);
   }
 
   async quickAddReminder(text: string): Promise<boolean> {
@@ -380,6 +399,10 @@ export class NodeController {
       width: 1,
       height: 1,
       settings: {
+        healthCheck: false,
+        healthIgnoreTLS: false,
+        location: "Amsterdam",
+        tempUnit: "C",
         timezone: "Europe/Amsterdam",
         flag: "🇳🇱",
         clockFace: "analog",
@@ -436,7 +459,7 @@ export class NodeController {
   }
 
   async saveNodeModal(): Promise<string | null> {
-    if (!this.session.activeWorkspace) return null;
+    if (!this.session.activeWorkspace) return "Create a Home Screen page first.";
 
     const isAction = this.nodeModal.node_type === "action";
     const isDockedOrChild =

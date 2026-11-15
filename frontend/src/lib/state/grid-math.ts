@@ -2,6 +2,7 @@ import type { DashboardNode, NodeType } from "../types";
 import {
   GRID_COLS,
   GRID_ROWS,
+  RESPONSIVE_MAX_ROWS,
   WIDGET_SIZE_PRESETS,
   type GridRect,
   type WidgetSizePreset,
@@ -11,26 +12,35 @@ export function snapToWidgetPreset(
   nodeType: NodeType,
   rawW: number,
   rawH: number,
+  maxCols = GRID_COLS,
 ): WidgetSizePreset {
   const presets = WIDGET_SIZE_PRESETS[nodeType] ?? WIDGET_SIZE_PRESETS.action;
   let best = presets[0];
   let bestScore = Infinity;
 
   for (const preset of presets) {
-    const dist = Math.abs(preset.w - rawW) + Math.abs(preset.h - rawH) * 1.25;
+    const effectiveW = Math.min(preset.w, maxCols);
+    const dist = Math.abs(effectiveW - rawW) + Math.abs(preset.h - rawH) * 1.25;
     if (dist < bestScore) {
       bestScore = dist;
-      best = preset;
+      best = { ...preset, w: effectiveW };
     }
   }
   return best;
 }
 
-export function clampToGrid(x: number, y: number, width: number, height: number): GridRect {
-  const w = Math.max(1, Math.min(width, GRID_COLS));
-  const h = Math.max(1, Math.min(height, GRID_ROWS));
-  const clampedX = Math.max(1, Math.min(x, GRID_COLS - w + 1));
-  const clampedY = Math.max(1, Math.min(y, GRID_ROWS - h + 1));
+export function clampToGrid(
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  cols = GRID_COLS,
+  rows = GRID_ROWS,
+): GridRect {
+  const w = Math.max(1, Math.min(width, cols));
+  const h = Math.max(1, Math.min(height, rows));
+  const clampedX = Math.max(1, Math.min(x, cols - w + 1));
+  const clampedY = Math.max(1, Math.min(y, rows - h + 1));
   return { x: clampedX, y: clampedY, w, h };
 }
 
@@ -38,13 +48,13 @@ export function rectsOverlap(a: GridRect, b: GridRect): boolean {
   return !(a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y);
 }
 
-export function canFitRectAmong(rect: GridRect, placed: GridRect[]): boolean {
-  if (
-    rect.x < 1 ||
-    rect.y < 1 ||
-    rect.x + rect.w - 1 > GRID_COLS ||
-    rect.y + rect.h - 1 > GRID_ROWS
-  ) {
+export function canFitRectAmong(
+  rect: GridRect,
+  placed: GridRect[],
+  cols = GRID_COLS,
+  rows = GRID_ROWS,
+): boolean {
+  if (rect.x < 1 || rect.y < 1 || rect.x + rect.w - 1 > cols || rect.y + rect.h - 1 > rows) {
     return false;
   }
   for (const other of placed) {
@@ -59,13 +69,15 @@ export function findClosestSlotAmong(
   w: number,
   h: number,
   placed: GridRect[],
+  cols = GRID_COLS,
+  rows = GRID_ROWS,
 ): { x: number; y: number } | null {
   let best: { x: number; y: number } | null = null;
   let bestDist = Infinity;
 
-  for (let y = 1; y <= GRID_ROWS - h + 1; y++) {
-    for (let x = 1; x <= GRID_COLS - w + 1; x++) {
-      if (canFitRectAmong({ x, y, w, h }, placed)) {
+  for (let y = 1; y <= rows - h + 1; y++) {
+    for (let x = 1; x <= cols - w + 1; x++) {
+      if (canFitRectAmong({ x, y, w, h }, placed, cols, rows)) {
         const dist = Math.abs(x - prefX) + Math.abs(y - prefY) * 1.6 + y * 0.05 + x * 0.01;
         if (dist < bestDist) {
           bestDist = dist;
@@ -83,8 +95,10 @@ export function canFitAmongNodes(
   width: number,
   height: number,
   existing: DashboardNode[],
+  cols = GRID_COLS,
+  rows = GRID_ROWS,
 ): boolean {
-  if (x < 1 || y < 1 || x + width - 1 > GRID_COLS || y + height - 1 > GRID_ROWS) {
+  if (x < 1 || y < 1 || x + width - 1 > cols || y + height - 1 > rows) {
     return false;
   }
 
@@ -111,13 +125,71 @@ export function findFreeSlotAmongNodes(
   width: number,
   height: number,
   existing: DashboardNode[],
+  cols = GRID_COLS,
+  rows = GRID_ROWS,
 ): { x: number; y: number } | null {
-  for (let y = 1; y <= GRID_ROWS - height + 1; y++) {
-    for (let x = 1; x <= GRID_COLS - width + 1; x++) {
-      if (canFitAmongNodes(x, y, width, height, existing)) {
+  for (let y = 1; y <= rows - height + 1; y++) {
+    for (let x = 1; x <= cols - width + 1; x++) {
+      if (canFitAmongNodes(x, y, width, height, existing, cols, rows)) {
         return { x, y };
       }
     }
   }
   return null;
+}
+
+/**
+ * Computes a deterministic, non-overlapping responsive layout for 8-col (tablet)
+ * or 4-col (mobile) viewports without overwriting the persisted 16-col desktop grid.
+ */
+export function computeResponsivePacking(
+  rootNodes: DashboardNode[],
+  cols: number,
+): Record<string, GridRect> {
+  const result: Record<string, GridRect> = {};
+  if (cols >= GRID_COLS) {
+    for (const n of rootNodes) {
+      result[n.id] = {
+        x: n.grid_x,
+        y: n.grid_y,
+        w: n.width || 1,
+        h: n.height || 1,
+      };
+    }
+    return result;
+  }
+
+  const key = String(cols);
+  const placed: GridRect[] = [];
+  const remaining: DashboardNode[] = [];
+
+  // 1. Honor explicit per-breakpoint overrides first
+  for (const n of rootNodes) {
+    const ov = n.settings?.layouts?.[key];
+    if (ov) {
+      const w = Math.max(1, Math.min(ov.w || n.width || 1, cols));
+      const h = Math.max(1, Math.min(ov.h || n.height || 1, RESPONSIVE_MAX_ROWS));
+      const clamped = clampToGrid(ov.x, ov.y, w, h, cols, RESPONSIVE_MAX_ROWS);
+      if (canFitRectAmong(clamped, placed, cols, RESPONSIVE_MAX_ROWS)) {
+        result[n.id] = clamped;
+        placed.push(clamped);
+        continue;
+      }
+    }
+    remaining.push(n);
+  }
+
+  // 2. Pack remaining nodes in top-to-bottom, left-to-right reading order
+  for (const n of remaining) {
+    const w = Math.max(1, Math.min(n.width || 1, cols));
+    const h = Math.max(1, Math.min(n.height || 1, RESPONSIVE_MAX_ROWS));
+    const slot = findClosestSlotAmong(1, 1, w, h, placed, cols, RESPONSIVE_MAX_ROWS);
+    const rect: GridRect = slot
+      ? { x: slot.x, y: slot.y, w, h }
+      : { x: 1, y: RESPONSIVE_MAX_ROWS, w, h };
+    result[n.id] = rect;
+    placed.push(rect);
+  }
+
+  return result;
 }

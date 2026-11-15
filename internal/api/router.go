@@ -26,6 +26,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // Max base64 string length for a 100KB binary image (~137KB + data URI header).
@@ -48,6 +49,69 @@ type urlMetaResponse struct {
 	Domain       string `json:"domain"`
 	IconURL      string `json:"icon_url"`
 	CanonicalURL string `json:"canonical_url"`
+}
+
+// Bounded TTL in-memory cache to prevent unbounded RAM growth.
+type ttlEntry[V any] struct {
+	val       V
+	expiresAt time.Time
+}
+
+type boundedTTLCache[V any] struct {
+	mu      sync.RWMutex
+	entries map[string]ttlEntry[V]
+	maxSize int
+	ttl     time.Duration
+}
+
+func newBoundedTTLCache[V any](maxSize int, ttl time.Duration) *boundedTTLCache[V] {
+	return &boundedTTLCache[V]{
+		entries: make(map[string]ttlEntry[V], maxSize),
+		maxSize: maxSize,
+		ttl:     ttl,
+	}
+}
+
+func (c *boundedTTLCache[V]) Get(key string) (V, bool) {
+	c.mu.RLock()
+	entry, ok := c.entries[key]
+	c.mu.RUnlock()
+	if !ok {
+		var zero V
+		return zero, false
+	}
+	if time.Now().After(entry.expiresAt) {
+		c.mu.Lock()
+		delete(c.entries, key)
+		c.mu.Unlock()
+		var zero V
+		return zero, false
+	}
+	return entry.val, true
+}
+
+func (c *boundedTTLCache[V]) Set(key string, val V) {
+	now := time.Now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.entries) >= c.maxSize {
+		// Evict expired items first, then drop one oldest-ish entry if still full
+		for k, e := range c.entries {
+			if now.After(e.expiresAt) {
+				delete(c.entries, k)
+			}
+		}
+		if len(c.entries) >= c.maxSize {
+			for k := range c.entries {
+				delete(c.entries, k)
+				break
+			}
+		}
+	}
+	c.entries[key] = ttlEntry[V]{
+		val:       val,
+		expiresAt: now.Add(c.ttl),
+	}
 }
 
 // Zero-dependency singleflight group to coalesce concurrent upstream icon/meta fetches.
@@ -93,10 +157,12 @@ type Server struct {
 	cipher           *crypto.EnvelopeCipher
 	calendarProvider *integrations.CalendarProvider
 	vikunjaProvider  *integrations.VikunjaProvider
+	healthProvider   *integrations.HealthCheckProvider
+	weatherProvider  *integrations.WeatherProvider
 	frontendFS       fs.FS
 	httpClient       *http.Client
-	iconCache        sync.Map // map[string]cachedIcon
-	metaCache        sync.Map // map[string]urlMetaResponse
+	iconCache        *boundedTTLCache[cachedIcon]
+	metaCache        *boundedTTLCache[urlMetaResponse]
 	sf               singleflightGroup
 }
 
@@ -106,6 +172,8 @@ func NewRouter(
 	cipher *crypto.EnvelopeCipher,
 	calendarProvider *integrations.CalendarProvider,
 	vikunjaProvider *integrations.VikunjaProvider,
+	healthProvider *integrations.HealthCheckProvider,
+	weatherProvider *integrations.WeatherProvider,
 	frontendFS fs.FS,
 ) http.Handler {
 	s := &Server{
@@ -114,10 +182,14 @@ func NewRouter(
 		cipher:           cipher,
 		calendarProvider: calendarProvider,
 		vikunjaProvider:  vikunjaProvider,
+		healthProvider:   healthProvider,
+		weatherProvider:  weatherProvider,
 		frontendFS:       frontendFS,
 		httpClient: &http.Client{
 			Timeout: 3500 * time.Millisecond,
 		},
+		iconCache: newBoundedTTLCache[cachedIcon](512, 24*time.Hour),
+		metaCache: newBoundedTTLCache[urlMetaResponse](512, 1*time.Hour),
 	}
 
 	mux := http.NewServeMux()
@@ -128,25 +200,29 @@ func NewRouter(
 	mux.HandleFunc("GET /api/v1/icons/{domain}", s.handleGetDomainIcon)
 	mux.HandleFunc("GET /api/v1/meta", s.handleGetURLMetadata)
 
-	// 2. Workspace Management Endpoints
+	// 2. Server-Synced Preferences
+	mux.HandleFunc("PUT /api/v1/preferences/{key}", s.handleUpsertPreference)
+
+	// 3. Workspace Management Endpoints
 	mux.HandleFunc("GET /api/v1/workspaces", s.handleListWorkspaces)
 	mux.HandleFunc("POST /api/v1/workspaces", s.handleCreateWorkspace)
 	mux.HandleFunc("DELETE /api/v1/workspaces/{id}", s.handleDeleteWorkspace)
 
-	// 3. Node & Layout Management Endpoints (via GORM)
+	// 4. Node & Layout Management Endpoints (via GORM)
 	mux.HandleFunc("GET /api/v1/nodes", s.handleListNodes)
 	mux.HandleFunc("POST /api/v1/nodes", s.handleCreateNode)
 	mux.HandleFunc("POST /api/v1/nodes/reorder", s.handleReorderNodes)
 	mux.HandleFunc("PATCH /api/v1/nodes/{id}", s.handleUpdateNode)
 	mux.HandleFunc("DELETE /api/v1/nodes/{id}", s.handleDeleteNode)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/calendar-sync", s.handleSyncCalendarNode)
+	mux.HandleFunc("GET /api/v1/nodes/{id}/calendar-events", s.handleQueryCalendarEvents)
 
-	// 4. Integration Management Endpoints (via GORM + AES-256-GCM)
+	// 5. Integration Management Endpoints (via GORM + AES-256-GCM)
 	mux.HandleFunc("GET /api/v1/integrations", s.handleListIntegrations)
 	mux.HandleFunc("POST /api/v1/integrations/{provider}/auth", s.handleCreateIntegration)
 	mux.HandleFunc("DELETE /api/v1/integrations/{id}", s.handleDeleteIntegration)
 
-	// 5. Vikunja Live Write-Through & Proxy Endpoints
+	// 6. Vikunja Live Write-Through & Proxy Endpoints
 	mux.HandleFunc("POST /api/v1/vikunja/sync", s.handleVikunjaSync)
 	mux.HandleFunc("POST /api/v1/vikunja/tasks", s.handleVikunjaCreateTask)
 	mux.HandleFunc("PATCH /api/v1/vikunja/tasks/{id}", s.handleVikunjaPatchTask)
@@ -156,7 +232,7 @@ func NewRouter(
 	mux.HandleFunc("GET /api/v1/vikunja/tasks/{id}/comments", s.handleVikunjaListComments)
 	mux.HandleFunc("POST /api/v1/vikunja/tasks/{id}/comments", s.handleVikunjaAddComment)
 
-	// 6. Embedded SPA Fallback
+	// 7. Embedded SPA Fallback
 	mux.HandleFunc("GET /", s.handleSPA)
 
 	return mux
@@ -202,7 +278,6 @@ func (s *Server) handleLiveSSE(w http.ResponseWriter, r *http.Request) {
 	defer unsubscribe()
 
 	_, _ = fmt.Fprintf(w, ": connected\n\n")
-	// Immediately hydrate the client with all current volatile signals
 	for _, delta := range s.engine.CurrentSignalDeltas() {
 		_, _ = fmt.Fprintf(w, "data: %s\n\n", delta)
 	}
@@ -222,7 +297,38 @@ func (s *Server) handleLiveSSE(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleGetDomainIcon resolves, coalesces, and caches high-res Apple Touch Icons / 128px favicons in RAM.
+func (s *Server) handleUpsertPreference(w http.ResponseWriter, r *http.Request) {
+	key := strings.TrimSpace(r.PathValue("key"))
+	if key == "" || len(key) > 64 {
+		http.Error(w, "invalid preference key", http.StatusBadRequest)
+		return
+	}
+
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 256*1024))
+	if err != nil || !json.Valid(raw) {
+		http.Error(w, "invalid JSON value", http.StatusBadRequest)
+		return
+	}
+
+	pref := models.Preference{
+		Key:   key,
+		Value: json.RawMessage(raw),
+	}
+
+	if err := s.db.WithContext(r.Context()).
+		Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "key"}},
+			DoUpdates: clause.AssignmentColumns([]string{"value", "updated_at"}),
+		}).
+		Create(&pref).Error; err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	_ = s.engine.RebuildSnapshot(r.Context())
+	writeJSON(w, http.StatusOK, pref)
+}
+
 func (s *Server) handleGetDomainIcon(w http.ResponseWriter, r *http.Request) {
 	domain := strings.ToLower(strings.TrimSpace(r.PathValue("domain")))
 	if domain == "" || strings.Contains(domain, "/") {
@@ -230,21 +336,21 @@ func (s *Server) handleGetDomainIcon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if val, ok := s.iconCache.Load(domain); ok {
-		serveCachedIcon(w, r, val.(cachedIcon))
+	if val, ok := s.iconCache.Get(domain); ok {
+		serveCachedIcon(w, r, val)
 		return
 	}
 
 	res, err := s.sf.Do("icon:"+domain, func() (any, error) {
-		if val, ok := s.iconCache.Load(domain); ok {
-			return val.(cachedIcon), nil
+		if val, ok := s.iconCache.Get(domain); ok {
+			return val, nil
 		}
 
 		entry, err := s.fetchBestDomainIcon(r.Context(), domain)
 		if err != nil {
 			return cachedIcon{}, err
 		}
-		s.iconCache.Store(domain, entry)
+		s.iconCache.Set(domain, entry)
 		return entry, nil
 	})
 	if err != nil {
@@ -320,7 +426,6 @@ func (s *Server) fetchBestDomainIcon(ctx context.Context, domain string) (cached
 	return cachedIcon{}, fmt.Errorf("no valid icon found for %s", domain)
 }
 
-// handleGetURLMetadata resolves the clean app title and icon URL with singleflight deduplication.
 func (s *Server) handleGetURLMetadata(w http.ResponseWriter, r *http.Request) {
 	rawURL := strings.TrimSpace(r.URL.Query().Get("url"))
 	if rawURL == "" {
@@ -340,13 +445,13 @@ func (s *Server) handleGetURLMetadata(w http.ResponseWriter, r *http.Request) {
 	domain := strings.ToLower(parsed.Hostname())
 	cacheKey := parsed.String()
 
-	if cached, ok := s.metaCache.Load(cacheKey); ok {
+	if cached, ok := s.metaCache.Get(cacheKey); ok {
 		writeJSON(w, http.StatusOK, cached)
 		return
 	}
 
 	res, _ := s.sf.Do("meta:"+cacheKey, func() (any, error) {
-		if cached, ok := s.metaCache.Load(cacheKey); ok {
+		if cached, ok := s.metaCache.Get(cacheKey); ok {
 			return cached, nil
 		}
 
@@ -373,7 +478,7 @@ func (s *Server) handleGetURLMetadata(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		s.metaCache.Store(cacheKey, result)
+		s.metaCache.Set(cacheKey, result)
 		return result, nil
 	})
 
@@ -613,6 +718,12 @@ func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 	if node.NodeType == "calendar" && s.calendarProvider != nil {
 		s.calendarProvider.TriggerSync()
 	}
+	if node.NodeType == "weather" && s.weatherProvider != nil {
+		s.weatherProvider.TriggerSync()
+	}
+	if node.NodeType == "action" && s.healthProvider != nil {
+		s.healthProvider.TriggerSync()
+	}
 
 	writeJSON(w, http.StatusCreated, node)
 }
@@ -710,6 +821,12 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 	if node.NodeType == "calendar" && s.calendarProvider != nil {
 		s.calendarProvider.TriggerSync()
 	}
+	if node.NodeType == "weather" && s.weatherProvider != nil {
+		s.weatherProvider.TriggerSync()
+	}
+	if node.NodeType == "action" && s.healthProvider != nil {
+		s.healthProvider.TriggerSync()
+	}
 
 	writeJSON(w, http.StatusOK, node)
 }
@@ -733,6 +850,38 @@ func (s *Server) handleSyncCalendarNode(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, http.StatusOK, status)
+}
+
+func (s *Server) handleQueryCalendarEvents(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "invalid node UUID", http.StatusBadRequest)
+		return
+	}
+	if s.calendarProvider == nil {
+		http.Error(w, "calendar provider unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	startStr := strings.TrimSpace(r.URL.Query().Get("start"))
+	endStr := strings.TrimSpace(r.URL.Query().Get("end"))
+	startTime, err1 := time.Parse("2006-01-02", startStr)
+	endTime, err2 := time.Parse("2006-01-02", endStr)
+	if err1 != nil || err2 != nil || endTime.Before(startTime) {
+		http.Error(w, "valid start and end query params (YYYY-MM-DD) required", http.StatusBadRequest)
+		return
+	}
+	if endTime.Sub(startTime) > 400*24*time.Hour {
+		endTime = startTime.AddDate(1, 0, 0)
+	}
+	endTime = endTime.Add(23*time.Hour + 59*time.Minute + 59*time.Second)
+
+	events, err := s.calendarProvider.QueryNodeEvents(r.Context(), id, startTime, endTime)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, events)
 }
 
 func (s *Server) handleDeleteNode(w http.ResponseWriter, r *http.Request) {

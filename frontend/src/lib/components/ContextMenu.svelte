@@ -1,5 +1,6 @@
 <script lang="ts">
     import {
+        Activity,
         ArrowRightLeft,
         Copy,
         FolderOutput,
@@ -82,7 +83,7 @@
         }}
         class="fixed inset-0 z-50 bg-black/28 backdrop-blur-[3px] transition-opacity duration-200 select-none"
     >
-        <!-- Foreground Lifted Target Platter (Static Preview = Safe Outside DragDropProvider) -->
+        <!-- Foreground Lifted Target Platter -->
         {#if anchorRect}
             <div
                 style="left: {anchorRect.left}px; top: {anchorRect.top}px; width: {anchorRect.width}px; height: {anchorRect.height}px; --lift-scale: {liftScale};"
@@ -129,9 +130,13 @@
                         class="flex items-center gap-1 p-0.5 rounded-xl bg-black/30 border border-white/8"
                     >
                         {#each sizePresets as preset (`${preset.w}x${preset.h}`)}
+                            {@const cur = dashboard.getEffectiveRect(node)}
+                            {@const targetW = Math.min(
+                                preset.w,
+                                dashboard.activeGridCols,
+                            )}
                             {@const isCurrent =
-                                (node.width || 1) === preset.w &&
-                                (node.height || 1) === preset.h}
+                                cur.w === targetW && cur.h === preset.h}
                             <button
                                 type="button"
                                 onclick={() =>
@@ -187,6 +192,25 @@
                     </span>
                     <SlidersHorizontal class="size-3.5 text-white/65" />
                 </button>
+
+                {#if node.node_type === "action" && node.url}
+                    <button
+                        type="button"
+                        onclick={() => dashboard.toggleHealthMonitor(node.id)}
+                        class="w-full px-2.5 py-1.5 rounded-xl hover:bg-white/12 flex items-center justify-between transition-colors cursor-pointer"
+                    >
+                        <span>
+                            {node.settings?.healthCheck
+                                ? "Disable Health Monitor"
+                                : "Monitor Service Health"}
+                        </span>
+                        <Activity
+                            class="size-3.5 {node.settings?.healthCheck
+                                ? 'text-[#30D158]'
+                                : 'text-white/65'}"
+                        />
+                    </button>
+                {/if}
 
                 {#if isInsideContainer}
                     <button
