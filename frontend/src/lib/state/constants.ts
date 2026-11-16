@@ -84,7 +84,10 @@ export interface ScreenBounds {
 
 export interface ContextMenuState {
   open: boolean;
+  mode: "node" | "canvas";
   nodeId: string | null;
+  gridX: number | null;
+  gridY: number | null;
   x: number;
   y: number;
   anchorRect: ScreenBounds | null;

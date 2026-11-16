@@ -28,8 +28,8 @@
         const onCaptureUp = (e: PointerEvent) => {
             clearEdgeDragTimer();
             clearFolderDwellTimer();
+            clearEdgeDisplaceTimer();
             clearWallpaperLongPress();
-            evictedTargetId = null;
             if (dashboard.isDirectDragging) {
                 void dashboard.finishDirectDrag(e.clientX, e.clientY);
             }
@@ -66,9 +66,9 @@
     let gridSectionEls = $state<Record<string, HTMLElement | null>>({});
     let edgeDragTimer: ReturnType<typeof setTimeout> | null = null;
     let folderDwellTimer: ReturnType<typeof setTimeout> | null = null;
-    let folderEvictTimer: ReturnType<typeof setTimeout> | null = null;
+    let edgeDisplaceTimer: ReturnType<typeof setTimeout> | null = null;
     let folderDwellCandidateId: string | null = null;
-    let evictedTargetId: string | null = null;
+    let edgeDisplaceKey: string | null = null;
     let wallpaperLongPressTimer: ReturnType<typeof setTimeout> | null = null;
     let wallpaperDownPos = { x: 0, y: 0 };
     let isWallpaperPointerDown = false;
@@ -93,6 +93,13 @@
         }
         for (const rect of Object.values(dashboard.previewPositions)) {
             rows = Math.max(rows, rect.y + rect.h - 1);
+        }
+        if (
+            dashboard.contextMenu.open &&
+            dashboard.contextMenu.mode === "canvas" &&
+            dashboard.contextMenu.gridY
+        ) {
+            rows = Math.max(rows, dashboard.contextMenu.gridY);
         }
         if (
             dashboard.isEditMode &&
@@ -129,7 +136,9 @@
             dashboard.isAppLibraryOpen,
     );
 
-    let isQuickActionRecessed = $derived(dashboard.contextMenu.open);
+    let isQuickActionRecessed = $derived(
+        dashboard.contextMenu.open && dashboard.contextMenu.mode === "node",
+    );
 
     function clearEdgeDragTimer() {
         if (edgeDragTimer) {
@@ -143,11 +152,15 @@
             clearTimeout(folderDwellTimer);
             folderDwellTimer = null;
         }
-        if (folderEvictTimer) {
-            clearTimeout(folderEvictTimer);
-            folderEvictTimer = null;
-        }
         folderDwellCandidateId = null;
+    }
+
+    function clearEdgeDisplaceTimer() {
+        if (edgeDisplaceTimer) {
+            clearTimeout(edgeDisplaceTimer);
+            edgeDisplaceTimer = null;
+        }
+        edgeDisplaceKey = null;
     }
 
     function clearWallpaperLongPress() {
@@ -164,6 +177,55 @@
             target.dataset.wallpaperSurface === "true" ||
             target.parentElement?.dataset.wallpaperSurface === "true"
         );
+    }
+
+    function handleBackgroundContextMenu(e: MouseEvent) {
+        if (!dashboard.auth.authenticated) return;
+        const target = e.target as HTMLElement | null;
+        if (
+            target?.closest(
+                "input, textarea, select, [contenteditable='true'], nav[aria-label='Global Dock']",
+            )
+        ) {
+            return;
+        }
+
+        let gridX: number | null = null;
+        let gridY: number | null = null;
+        const activeWsId = dashboard.activeWorkspace?.id;
+        const activeGridEl = activeWsId
+            ? gridSectionEls[activeWsId]
+            : undefined;
+
+        if (activeGridEl) {
+            const rect = activeGridEl.getBoundingClientRect();
+            if (
+                e.clientX >= rect.left &&
+                e.clientX <= rect.right &&
+                e.clientY >= rect.top
+            ) {
+                const activeCols = dashboard.activeGridCols;
+                const colWidth = rect.width / activeCols;
+                const rowHeight = 116;
+                const candX = Math.max(
+                    1,
+                    Math.min(
+                        activeCols,
+                        Math.floor((e.clientX - rect.left) / colWidth) + 1,
+                    ),
+                );
+                const candY = Math.max(
+                    1,
+                    Math.floor((e.clientY - rect.top) / rowHeight) + 1,
+                );
+                if (!dashboard.isCellOccupied(candX, candY)) {
+                    gridX = candX;
+                    gridY = candY;
+                }
+            }
+        }
+
+        dashboard.openCanvasContextMenu(e, gridX, gridY);
     }
 
     function handleBackgroundPointerDown(e: PointerEvent) {
@@ -466,7 +528,7 @@
         if (!dashboard.isEditMode || !dashboard.activeDragNodeId) {
             clearEdgeDragTimer();
             clearFolderDwellTimer();
-            evictedTargetId = null;
+            clearEdgeDisplaceTimer();
             return;
         }
 
@@ -517,6 +579,32 @@
                 );
                 const rawRow = Math.max(1, Math.floor(relY / rowHeight) + 1);
 
+                const parentContainer = draggedNode?.parent_id
+                    ? dashboard.nodes.find(
+                          (n) => n.id === draggedNode.parent_id,
+                      )
+                    : null;
+
+                if (parentContainer) {
+                    const pRect = dashboard.getEffectiveRect(parentContainer);
+                    const isInsideOwnParent =
+                        exactCol >= pRect.x &&
+                        exactCol <= pRect.x + pRect.w &&
+                        exactRow >= pRect.y &&
+                        exactRow <= pRect.y + pRect.h;
+
+                    if (isInsideOwnParent) {
+                        clearFolderDwellTimer();
+                        clearEdgeDisplaceTimer();
+                        dashboard.setPendingContainerMerge(null);
+                        if (dashboard.folderMergeTargetId) {
+                            dashboard.setFolderMergeTarget(null);
+                        }
+                        dashboard.holdGridReflowOnTarget();
+                        return;
+                    }
+                }
+
                 const isDraggedWidget = Boolean(
                     draggedType &&
                     draggedType !== "action" &&
@@ -552,34 +640,54 @@
                     );
                 });
 
-                if (candidateNode && evictedTargetId !== candidateNode.id) {
-                    evictedTargetId = null;
-                }
+                const forceDisplace = e.altKey || e.shiftKey;
 
-                if (candidateNode && evictedTargetId !== candidateNode.id) {
+                if (candidateNode && !forceDisplace) {
                     const cRect = dashboard.getEffectiveRect(candidateNode);
-                    const u = (exactCol - cRect.x) / cRect.w;
-                    const v = (exactRow - cRect.y) / cRect.h;
+                    const targetPxW = cRect.w * colWidth;
+                    const targetPxH = cRect.h * rowHeight;
 
-                    const edgeMargin =
-                        cRect.w >= 2 || cRect.h >= 2 ? 0.15 : 0.2;
+                    const rimX =
+                        cRect.w > 1 ? 22 : Math.min(18, targetPxW * 0.2);
+                    const rimY =
+                        cRect.h > 1 ? 22 : Math.min(20, targetPxH * 0.2);
+
+                    const pxFromLeft = (exactCol - cRect.x) * colWidth;
+                    const pxFromRight =
+                        (cRect.x + cRect.w - exactCol) * colWidth;
+                    const pxFromTop = (exactRow - cRect.y) * rowHeight;
+                    const pxFromBottom =
+                        (cRect.y + cRect.h - exactRow) * rowHeight;
+
                     const isInsideDropCore =
-                        u > edgeMargin &&
-                        u < 1 - edgeMargin &&
-                        v > edgeMargin &&
-                        v < 1 - edgeMargin;
+                        pxFromLeft > rimX &&
+                        pxFromRight > rimX &&
+                        pxFromTop > rimY &&
+                        pxFromBottom > rimY;
 
                     if (isInsideDropCore) {
+                        clearEdgeDisplaceTimer();
                         dashboard.holdGridReflowOnTarget();
 
-                        if (folderDwellCandidateId !== candidateNode.id) {
+                        if (candidateNode.node_type === "container") {
+                            dashboard.setPendingContainerMerge(
+                                candidateNode.id,
+                            );
+                        } else {
+                            dashboard.setPendingContainerMerge(null);
+                        }
+
+                        if (
+                            folderDwellCandidateId !== candidateNode.id &&
+                            dashboard.folderMergeTargetId !== candidateNode.id
+                        ) {
                             clearFolderDwellTimer();
                             folderDwellCandidateId = candidateNode.id;
 
                             const activateDelay =
                                 candidateNode.node_type === "container"
-                                    ? 90
-                                    : 220;
+                                    ? 55
+                                    : 140;
 
                             folderDwellTimer = setTimeout(() => {
                                 folderDwellTimer = null;
@@ -587,27 +695,29 @@
                                     candidateNode.id,
                                 );
                             }, activateDelay);
-
-                            folderEvictTimer = setTimeout(() => {
-                                folderEvictTimer = null;
-                                evictedTargetId = candidateNode.id;
-                                folderDwellCandidateId = null;
-                                dashboard.setFolderMergeTarget(null);
-                                dashboard.updateDragReflow(rawCol, rawRow);
-                            }, 1050);
                         }
                     } else {
                         clearFolderDwellTimer();
+                        dashboard.setPendingContainerMerge(null);
                         if (dashboard.folderMergeTargetId) {
                             dashboard.setFolderMergeTarget(null);
                         }
-                        dashboard.updateDragReflow(rawCol, rawRow);
+
+                        const nextKey = `${candidateNode.id}:${rawCol}:${rawRow}`;
+                        if (edgeDisplaceKey !== nextKey) {
+                            clearEdgeDisplaceTimer();
+                            edgeDisplaceKey = nextKey;
+                            edgeDisplaceTimer = setTimeout(() => {
+                                edgeDisplaceTimer = null;
+                                edgeDisplaceKey = null;
+                                dashboard.updateDragReflow(rawCol, rawRow);
+                            }, 150);
+                        }
                     }
                 } else {
-                    if (!candidateNode) {
-                        evictedTargetId = null;
-                    }
                     clearFolderDwellTimer();
+                    clearEdgeDisplaceTimer();
+                    dashboard.setPendingContainerMerge(null);
                     if (dashboard.folderMergeTargetId) {
                         dashboard.setFolderMergeTarget(null);
                     }
@@ -671,6 +781,7 @@
         <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
         <main
             data-wallpaper-surface="true"
+            oncontextmenu={handleBackgroundContextMenu}
             onpointerdown={handleBackgroundPointerDown}
             onclick={handleBackgroundClick}
             ondblclick={handleBackgroundDblClick}
@@ -755,6 +866,16 @@
                                             occupied={cell.occupied}
                                         />
                                     {/each}
+
+                                    {#if dashboard.contextMenu.open && dashboard.contextMenu.mode === "canvas" && dashboard.contextMenu.gridX && dashboard.contextMenu.gridY}
+                                        <div
+                                            style="grid-column: {dashboard
+                                                .contextMenu
+                                                .gridX}; grid-row: {dashboard
+                                                .contextMenu.gridY};"
+                                            class="block pointer-events-none z-0 ios-drop-ghost"
+                                        ></div>
+                                    {/if}
 
                                     {#if dashboard.isEditMode && dashboard.dropPreview}
                                         <div

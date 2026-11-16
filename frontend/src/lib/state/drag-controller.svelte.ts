@@ -18,6 +18,7 @@ export class DragController {
   dragGrabOffset = $state<{ col: number; row: number }>({ col: 0, row: 0 });
   resizingNodeId = $state<string | null>(null);
   folderMergeTargetId = $state<string | null>(null);
+  private pendingContainerMergeId: string | null = null;
   dropPreview = $state<GridRect | null>(null);
   previewPositions = $state<Record<string, GridRect>>({});
 
@@ -82,6 +83,10 @@ export class DragController {
     this.previewPositions = {};
   }
 
+  setPendingContainerMerge(targetId: string | null): void {
+    this.pendingContainerMergeId = targetId;
+  }
+
   setFolderMergeTarget(targetId: string | null): void {
     this.folderMergeTargetId = targetId;
     if (targetId) {
@@ -125,6 +130,7 @@ export class DragController {
     this.dropPreview = null;
     this.previewPositions = {};
     this.folderMergeTargetId = null;
+    this.pendingContainerMergeId = null;
     this.session.flushPendingSync();
   }
 
@@ -145,6 +151,7 @@ export class DragController {
     this.directDragInitialBounds = initialBounds;
     this.activeDragLiveBounds = { id: nodeId, rect: initialBounds };
     this.folderMergeTargetId = null;
+    this.pendingContainerMergeId = null;
 
     const node = this.session.nodes.find((n) => n.id === nodeId);
     if (node && !node.parent_id && node.grid_x > 0) {
@@ -177,6 +184,7 @@ export class DragController {
     if (!this.isDirectDragging) return;
     const draggedId = this.activeDragNodeId;
     const mergeTargetId = this.folderMergeTargetId;
+    const pendingMergeId = this.pendingContainerMergeId;
 
     if (draggedId && this.activeDragLiveBounds?.id === draggedId) {
       this.settlingSeq += 1;
@@ -193,6 +201,7 @@ export class DragController {
     this.activeDragLiveBounds = null;
     this.activeDragNodeId = null;
     this.folderMergeTargetId = null;
+    this.pendingContainerMergeId = null;
     this.dragGrabOffset = { col: 0, row: 0 };
 
     if (!draggedId || !this.session.isEditMode) {
@@ -206,8 +215,10 @@ export class DragController {
       return;
     }
 
-    if (mergeTargetId && mergeTargetId !== draggedId) {
-      const mergeTargetNode = this.session.nodes.find((n) => n.id === mergeTargetId);
+    const effectiveMergeId = mergeTargetId || (!this.dropPreview ? pendingMergeId : null);
+
+    if (effectiveMergeId && effectiveMergeId !== draggedId) {
+      const mergeTargetNode = this.session.nodes.find((n) => n.id === effectiveMergeId);
       if (mergeTargetNode) {
         this.clearDragPreview();
         await this.mergeNodesIntoFolder(sourceNode, mergeTargetNode);
@@ -351,17 +362,19 @@ export class DragController {
 
     if (cols < GRID_COLS) {
       const colKey = String(cols);
-      const patches: { id: string; settings: DashboardNode["settings"] }[] = [];
+      const patches: { id: string; payload: Record<string, unknown> }[] = [];
 
       for (const [id, rect] of entries) {
         const node = this.session.nodes.find((n) => n.id === id);
         if (!node) continue;
 
+        const extractedFromContainer = node.parent_id !== null;
         if (!node.settings) node.settings = {};
         if (!node.settings.layouts) node.settings.layouts = {};
 
         const prevOv = node.settings.layouts[colKey];
         const changed =
+          extractedFromContainer ||
           !prevOv ||
           prevOv.x !== rect.x ||
           prevOv.y !== rect.y ||
@@ -375,10 +388,36 @@ export class DragController {
           h: rect.h,
         };
 
+        if (extractedFromContainer) {
+          const free = this.session.findFirstFreeCell(rect.w, rect.h, node.id) ?? {
+            x: rect.x,
+            y: rect.y,
+          };
+          if (activeWsId) node.workspace_id = activeWsId;
+          node.parent_id = null;
+          node.grid_x = free.x;
+          node.grid_y = free.y;
+          node.width = rect.w;
+          node.height = rect.h;
+          node.sort_order = free.y * 100 + free.x;
+        }
+
         if (changed) {
+          const settingsCopy = structuredClone($state.snapshot(node.settings));
           patches.push({
             id: node.id,
-            settings: structuredClone($state.snapshot(node.settings)),
+            payload: extractedFromContainer
+              ? {
+                  workspace_id: node.workspace_id,
+                  parent_id: null,
+                  grid_x: node.grid_x,
+                  grid_y: node.grid_y,
+                  width: node.width,
+                  height: node.height,
+                  sort_order: node.sort_order,
+                  settings: settingsCopy,
+                }
+              : { settings: settingsCopy },
           });
         }
       }
@@ -390,7 +429,7 @@ export class DragController {
         void apiFetch(`/api/v1/nodes/${p.id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ settings: p.settings }),
+          body: JSON.stringify(p.payload),
         });
       }
       return;
@@ -516,6 +555,7 @@ export class DragController {
     const id = event.operation?.source?.id;
     this.activeDragNodeId = id ? String(id) : null;
     this.folderMergeTargetId = null;
+    this.pendingContainerMergeId = null;
     if (this.activeDragNodeId) {
       const node = this.session.nodes.find((n) => n.id === this.activeDragNodeId);
       if (node && !node.parent_id && node.grid_x > 0) {
@@ -535,12 +575,14 @@ export class DragController {
     if (targetId === "dock:dropzone") {
       this.dropPreview = null;
       this.previewPositions = {};
+      this.pendingContainerMergeId = null;
     }
   };
 
   handleDragEnd = async (event: DragEndEventPayload): Promise<void> => {
     const draggedId = this.activeDragNodeId;
     const mergeTargetId = this.folderMergeTargetId;
+    const pendingMergeId = this.pendingContainerMergeId;
 
     if (draggedId && this.activeDragLiveBounds?.id === draggedId) {
       this.settlingSeq += 1;
@@ -553,6 +595,7 @@ export class DragController {
     this.activeDragLiveBounds = null;
     this.activeDragNodeId = null;
     this.folderMergeTargetId = null;
+    this.pendingContainerMergeId = null;
     this.dragGrabOffset = { col: 0, row: 0 };
 
     if (event.canceled || !this.session.isEditMode) {
@@ -638,6 +681,7 @@ export class DragController {
       return;
     }
 
+    // Reordering inside an open FolderModal or inside an expanded ContainerTile
     if (
       targetNode &&
       sourceNode.parent_id &&
@@ -673,6 +717,32 @@ export class DragController {
         body: JSON.stringify(updates),
       });
       return;
+    }
+
+    // Dropping a child on itself or an empty gap inside its own parent container is a no-op
+    if (
+      sourceNode.parent_id &&
+      !this.dropPreview &&
+      (sourceId === targetId || targetId === sourceNode.parent_id || targetId === "")
+    ) {
+      this.clearDragPreview();
+      return;
+    }
+
+    // If the grid drop ghost is active (e.g. edge-pushed past a container or extracted onto grid), honor it
+    if (this.dropPreview && Object.keys(this.previewPositions).length > 0) {
+      await this.commitPreviewLayout();
+      return;
+    }
+
+    // Fast flick-drop inside a container core before the 55ms hover timer fired
+    if (pendingMergeId && pendingMergeId !== sourceId) {
+      const mergeTargetNode = this.session.nodes.find((n) => n.id === pendingMergeId);
+      if (mergeTargetNode) {
+        this.clearDragPreview();
+        await this.mergeNodesIntoFolder(sourceNode, mergeTargetNode);
+        return;
+      }
     }
 
     if (targetNode && sourceNode.node_type === "action" && targetNode.parent_id) {
@@ -715,11 +785,6 @@ export class DragController {
       return;
     }
 
-    if (this.dropPreview && Object.keys(this.previewPositions).length > 0) {
-      await this.commitPreviewLayout();
-      return;
-    }
-
     if (targetId.startsWith("cell:")) {
       const parts = targetId.split(":");
       this.updateDragReflow(Number(parts[1]), Number(parts[2]));
@@ -727,7 +792,7 @@ export class DragController {
       return;
     }
 
-    if (targetNode && !targetNode.parent_id && targetNode.grid_x > 0) {
+    if (targetNode && !targetNode.parent_id && targetNode.grid_x > 0 && sourceId !== targetId) {
       const targetRect = this.session.getNodeGridRect(targetNode);
       const srcRect = this.session.getNodeGridRect(sourceNode);
       const layout = this.computeReflowedPositions(sourceNode.id, {
