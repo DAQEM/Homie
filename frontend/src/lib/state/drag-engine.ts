@@ -1,11 +1,11 @@
 import { generateUUID, type DashboardNode } from "../types";
-import { GRID_COLS, GRID_ROWS, RESPONSIVE_MAX_ROWS, type GridRect } from "./constants";
+import { GRID_COLS, type GridRect } from "./constants";
 import { canFitRectAmong, clampToGrid, findClosestSlotAmong, rectsOverlap } from "./grid-math";
 import { apiFetch } from "./session.svelte";
 
 /**
  * Computes non-overlapping 2D grid positions when `activeNodeId` is dragged or resized
- * to `targetRect`, swapping or cascading displaced sibling nodes across `cols x rows`.
+ * to `targetRect`, swapping or cascading displaced sibling nodes across `cols x infinite rows`.
  */
 export function computeGridReflow(
   allNodes: DashboardNode[],
@@ -15,7 +15,7 @@ export function computeGridReflow(
   cols = GRID_COLS,
   baseRects?: Record<string, GridRect>,
 ): Record<string, GridRect> | null {
-  const rows = cols < GRID_COLS ? RESPONSIVE_MAX_ROWS : GRID_ROWS;
+  const rows = Infinity;
   const clampedTarget = clampToGrid(
     targetRect.x,
     targetRect.y,

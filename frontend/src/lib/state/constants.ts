@@ -8,7 +8,6 @@ export const APPEARANCE_STORAGE_KEY = "homie_appearance_v1";
 
 export const GRID_COLS = 16;
 export const GRID_ROWS = 8;
-export const RESPONSIVE_MAX_ROWS = 48;
 export const MAX_ICON_BYTES = 100 * 1024; // 100 KB
 
 export function getGridColsForWidth(width: number): number {

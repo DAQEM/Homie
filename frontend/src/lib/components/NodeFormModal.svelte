@@ -9,6 +9,7 @@
         GripHorizontal,
         ListTodo,
         Loader2,
+        Palette,
         Plus,
         Search,
         Sparkles,
@@ -34,6 +35,19 @@
     import CalendarTile from "./widgets/CalendarTile.svelte";
     import SearchTile from "./widgets/SearchTile.svelte";
     import WeatherTile from "./widgets/WeatherTile.svelte";
+
+    const ACTION_COLOR_SWATCHES = [
+        { label: "Blue", hex: "#0A84FF" },
+        { label: "Indigo", hex: "#5E5CE6" },
+        { label: "Purple", hex: "#BF5AF2" },
+        { label: "Pink", hex: "#FF375F" },
+        { label: "Red", hex: "#FF453A" },
+        { label: "Orange", hex: "#FF9F0A" },
+        { label: "Yellow", hex: "#FFD60A" },
+        { label: "Green", hex: "#30D158" },
+        { label: "Teal", hex: "#64D2FF" },
+        { label: "Slate", hex: "#475569" },
+    ];
 
     let formError = $state<string | null>(null);
     let gallerySearch = $state("");
@@ -253,6 +267,7 @@
             width: dashboard.nodeModal.width || DEFAULT_NODE_SIZES[t].w,
             height: dashboard.nodeModal.height || DEFAULT_NODE_SIZES[t].h,
             settings: {
+                color: dashboard.nodeModal.settings.color || undefined,
                 location: dashboard.nodeModal.settings.location || "Amsterdam",
                 tempUnit: dashboard.nodeModal.settings.tempUnit || "C",
                 timezone:
@@ -465,6 +480,68 @@
     }
 </script>
 
+{#snippet actionColorPicker()}
+    {@const activeColor = dashboard.nodeModal.settings.color?.trim() || ""}
+    <div class="ios-nested-surface px-3 py-2 rounded-xl space-y-2">
+        <div class="flex items-center justify-between">
+            <span
+                class="text-[11px] font-medium text-white/75 flex items-center gap-1.5"
+            >
+                <Palette class="size-3.5 text-secondary" />
+                <span>Squircle Color</span>
+            </span>
+            <button
+                type="button"
+                onclick={() => (dashboard.nodeModal.settings.color = "")}
+                class="px-2 py-0.5 rounded-full text-[10px] font-semibold transition-colors cursor-pointer {activeColor ===
+                ''
+                    ? 'bg-white text-black'
+                    : 'bg-white/10 text-white/65 hover:text-white'}"
+            >
+                Auto
+            </button>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-1.5">
+            {#each ACTION_COLOR_SWATCHES as swatch (swatch.hex)}
+                {@const isSelected =
+                    activeColor.toLowerCase() === swatch.hex.toLowerCase()}
+                <button
+                    type="button"
+                    onclick={() =>
+                        (dashboard.nodeModal.settings.color = swatch.hex)}
+                    title={swatch.label}
+                    style="background: {swatch.hex};"
+                    class="size-5.5 rounded-full border border-white/25 transition-transform cursor-pointer {isSelected
+                        ? 'scale-115 ring-2 ring-white ring-offset-1 ring-offset-[#181922]'
+                        : 'opacity-80 hover:opacity-100 hover:scale-105'}"
+                ></button>
+            {/each}
+
+            <label
+                title="Custom Color"
+                class="relative size-5.5 rounded-full border border-white/30 overflow-hidden cursor-pointer hover:scale-105 transition-transform {activeColor &&
+                !ACTION_COLOR_SWATCHES.some(
+                    (s) => s.hex.toLowerCase() === activeColor.toLowerCase(),
+                )
+                    ? 'ring-2 ring-white ring-offset-1 ring-offset-[#181922]'
+                    : ''}"
+                style="background: {activeColor ||
+                    'conic-gradient(from 0deg, #ff453a, #ff9f0a, #ffd60a, #30d158, #64d2ff, #0a84ff, #bf5af2, #ff375f, #ff453a)'};"
+            >
+                <input
+                    type="color"
+                    value={activeColor || "#0A84FF"}
+                    oninput={(e) =>
+                        (dashboard.nodeModal.settings.color =
+                            e.currentTarget.value)}
+                    class="sr-only"
+                />
+            </label>
+        </div>
+    </div>
+{/snippet}
+
 {#if dashboard.nodeModal.open}
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -475,7 +552,7 @@
         {#if isGalleryMode}
             <form
                 onsubmit={handleSubmit}
-                class="w-full max-w-[800px] h-[560px] max-h-[92vh] ios-modal-surface rounded-[32px] text-card-foreground flex overflow-hidden shadow-2xl ios-context-menu"
+                class="w-full max-w-[800px] h-[590px] max-h-[92vh] ios-modal-surface rounded-[32px] text-card-foreground flex overflow-hidden shadow-2xl ios-context-menu"
             >
                 <aside
                     class="w-[236px] shrink-0 border-r border-white/10 bg-black/20 p-3.5 flex flex-col gap-3"
@@ -573,12 +650,15 @@
                             dashboard.nodeModal.icon &&
                             dashboard.nodeModal.icon.startsWith("data:"),
                         )}
-                        <div class="my-auto space-y-3.5">
+                        {@const hasCustomColor = Boolean(
+                            dashboard.nodeModal.settings.color?.trim(),
+                        )}
+                        <div class="my-auto space-y-3 py-2">
                             <div
-                                class="ios-gallery-stage rounded-[24px] py-4 px-4 flex flex-col items-center justify-center gap-2"
+                                class="ios-gallery-stage rounded-[24px] py-3.5 px-4 flex flex-col items-center justify-center gap-2"
                             >
                                 <div
-                                    style={!hasUpload
+                                    style={!hasUpload || hasCustomColor
                                         ? `background: ${previewGrad};`
                                         : ""}
                                     class="relative size-[68px] rounded-[18px] ios-icon-surface flex items-center justify-center overflow-hidden shadow-xl"
@@ -659,6 +739,8 @@
                                     />
                                 </label>
                             </div>
+
+                            {@render actionColorPicker()}
 
                             <div
                                 class="ios-nested-surface px-3 py-2 rounded-xl flex flex-wrap items-center justify-between gap-3"
@@ -1129,7 +1211,7 @@
         {:else}
             <form
                 onsubmit={handleSubmit}
-                class="max-w-md w-full ios-modal-surface rounded-[30px] text-card-foreground p-6 space-y-4 ios-context-menu"
+                class="max-w-md w-full ios-modal-surface rounded-[30px] text-card-foreground p-6 space-y-4 ios-context-menu max-h-[90vh] overflow-y-auto"
             >
                 <div
                     class="flex items-center justify-between border-b border-white/10 pb-3.5"
@@ -1145,7 +1227,7 @@
                         <p class="text-[11px] text-white/50">
                             {dashboard.nodeModal.node_type === "container"
                                 ? "Update folder title"
-                                : "Paste a URL to auto-detect the title and app icon"}
+                                : "Customize title, squircle color, icon, and health monitor"}
                         </p>
                     </div>
                     <Button variant="ghost" size="icon" onclick={handleClose}>
@@ -1154,6 +1236,56 @@
                 </div>
 
                 {#if dashboard.nodeModal.node_type === "action"}
+                    {@const previewIconSrc = getNodeIconSrc(previewNode)}
+                    {@const previewGrad = getNodeBrandGradient(previewNode)}
+                    {@const hasUpload = Boolean(
+                        dashboard.nodeModal.icon &&
+                        dashboard.nodeModal.icon.startsWith("data:"),
+                    )}
+                    {@const hasCustomColor = Boolean(
+                        dashboard.nodeModal.settings.color?.trim(),
+                    )}
+                    <div
+                        class="flex items-center gap-3.5 ios-nested-surface p-3 rounded-2xl"
+                    >
+                        <div
+                            style={!hasUpload || hasCustomColor
+                                ? `background: ${previewGrad};`
+                                : ""}
+                            class="relative size-12 rounded-[14px] ios-icon-surface flex items-center justify-center overflow-hidden shrink-0 shadow-md"
+                        >
+                            {#if hasUpload && previewIconSrc}
+                                <img
+                                    src={previewIconSrc}
+                                    alt="Preview"
+                                    class="w-full h-full object-cover"
+                                />
+                            {:else if previewIconSrc}
+                                <img
+                                    src={previewIconSrc}
+                                    alt="Preview"
+                                    class="w-7 h-7 object-contain drop-shadow"
+                                />
+                            {:else}
+                                <span
+                                    class="text-sm font-bold text-white uppercase"
+                                >
+                                    {previewNode.title.slice(0, 2)}
+                                </span>
+                            {/if}
+                        </div>
+                        <div class="min-w-0">
+                            <div
+                                class="text-xs font-semibold text-white truncate"
+                            >
+                                {previewNode.title}
+                            </div>
+                            <div class="text-[10.5px] text-white/50 truncate">
+                                {dashboard.nodeModal.url || "https://"}
+                            </div>
+                        </div>
+                    </div>
+
                     <label class="block space-y-1.5">
                         <span
                             class="text-xs font-medium text-white/70 flex items-center justify-between"
@@ -1191,6 +1323,8 @@
                 </label>
 
                 {#if dashboard.nodeModal.node_type === "action"}
+                    {@render actionColorPicker()}
+
                     <div
                         class="ios-nested-surface px-3 py-2 rounded-xl flex flex-wrap items-center justify-between gap-2"
                     >

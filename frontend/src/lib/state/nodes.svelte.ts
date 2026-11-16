@@ -8,7 +8,7 @@ import {
 } from "../types";
 import type { AppearanceController } from "./appearance.svelte";
 import type { CalendarController } from "./calendar.svelte";
-import { GRID_COLS, GRID_ROWS, type ScreenBounds } from "./constants";
+import { GRID_COLS, type ScreenBounds } from "./constants";
 import type { DragController } from "./drag-controller.svelte";
 import { clampToGrid } from "./grid-math";
 import type { OverlayController } from "./overlays.svelte";
@@ -74,7 +74,7 @@ export class NodeController {
 
     const t = this.nodeModal.node_type;
     const width = Math.max(1, Math.min(GRID_COLS, Number(this.nodeModal.width) || 2));
-    const height = Math.max(1, Math.min(GRID_ROWS, Number(this.nodeModal.height) || 2));
+    const height = Math.max(1, Number(this.nodeModal.height) || 2);
     const free = this.session.findFirstFreeCell(width, height) ?? { x: 1, y: 1 };
 
     const finalTitle = this.nodeModal.title.trim() || DEFAULT_TITLE_MAP[t];
@@ -421,6 +421,7 @@ export class NodeController {
       width: 1,
       height: 1,
       settings: {
+        color: "",
         healthCheck: false,
         healthIgnoreTLS: false,
         location: "Amsterdam",
@@ -494,9 +495,7 @@ export class NodeController {
         ? 1
         : Math.max(1, Math.min(GRID_COLS, Number(this.nodeModal.width) || 1));
     const height =
-      isAction || isDockedOrChild
-        ? 1
-        : Math.max(1, Math.min(GRID_ROWS, Number(this.nodeModal.height) || 1));
+      isAction || isDockedOrChild ? 1 : Math.max(1, Number(this.nodeModal.height) || 1);
 
     let finalX = this.nodeModal.grid_x;
     let finalY = this.nodeModal.grid_y;
@@ -512,7 +511,7 @@ export class NodeController {
       } else {
         const fallback = this.session.findFirstFreeCell(width, height, ignoreId);
         if (!fallback) {
-          return `Not enough free space on the 16x8 grid for a ${width}x${height} node.`;
+          return `Not enough free space on the 16-column grid for a ${width}x${height} node.`;
         }
         finalX = fallback.x;
         finalY = fallback.y;
@@ -522,6 +521,10 @@ export class NodeController {
     const finalTitle = this.nodeModal.title.trim() || DEFAULT_TITLE_MAP[this.nodeModal.node_type];
 
     const settingsSnapshot = structuredClone($state.snapshot(this.nodeModal.settings));
+    if (typeof settingsSnapshot.color === "string" && settingsSnapshot.color.trim() === "") {
+      delete settingsSnapshot.color;
+    }
+
     if (
       this.nodeModal.node_type === "calendar" &&
       settingsSnapshot.icalUrl &&

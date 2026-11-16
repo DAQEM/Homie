@@ -83,9 +83,31 @@
     let lastTouchX = 0;
     let lastTouchTime = 0;
 
+    let displayGridRows = $derived.by(() => {
+        let rows = dashboard.activeGridRows;
+        if (dashboard.dropPreview) {
+            rows = Math.max(
+                rows,
+                dashboard.dropPreview.y + dashboard.dropPreview.h - 1,
+            );
+        }
+        for (const rect of Object.values(dashboard.previewPositions)) {
+            rows = Math.max(rows, rect.y + rect.h - 1);
+        }
+        if (
+            dashboard.isEditMode &&
+            (dashboard.activeDragNodeId || dashboard.resizingNodeId)
+        ) {
+            rows += 3;
+        } else if (dashboard.isEditMode) {
+            rows += 1;
+        }
+        return rows;
+    });
+
     let cells = $derived.by(() => {
         const cols = dashboard.activeGridCols;
-        const rows = dashboard.activeGridRows;
+        const rows = displayGridRows;
         const list: { x: number; y: number; occupied: boolean }[] = [];
         for (let y = 1; y <= rows; y++) {
             for (let x = 1; x <= cols; x++) {
@@ -448,20 +470,39 @@
             return;
         }
 
+        const isOverDock =
+            e.target instanceof HTMLElement &&
+            Boolean(e.target.closest('nav[aria-label="Global Dock"]'));
+
         const activeWsId = dashboard.activeWorkspace?.id;
         const activeGridEl = activeWsId
             ? gridSectionEls[activeWsId]
             : undefined;
 
         if (activeGridEl && !dashboard.openFolderId) {
+            const draggedNode = dashboard.nodes.find(
+                (n) => n.id === dashboard.activeDragNodeId,
+            );
+            const draggedType = draggedNode?.node_type;
+            const isDraggedAction = draggedType === "action";
+            const isDockable = isDraggedAction || draggedType === "container";
+
             const rect = activeGridEl.getBoundingClientRect();
             const isInsideGrid =
+                !(isOverDock && isDockable) &&
                 e.clientX >= rect.left &&
                 e.clientX <= rect.right &&
                 e.clientY >= rect.top &&
-                e.clientY <= rect.bottom + 40;
+                e.clientY <= rect.bottom + 160;
 
             if (isInsideGrid) {
+                // Smooth vertical edge auto-scroll for infinite downward grid
+                if (e.clientY > window.innerHeight - 88 && !isOverDock) {
+                    window.scrollBy({ top: 14, behavior: "auto" });
+                } else if (e.clientY < 64 && window.scrollY > 0) {
+                    window.scrollBy({ top: -14, behavior: "auto" });
+                }
+
                 const activeCols = dashboard.activeGridCols;
                 const colWidth = rect.width / activeCols;
                 const rowHeight = 116;
@@ -470,14 +511,12 @@
 
                 const exactCol = relX / colWidth + 1;
                 const exactRow = relY / rowHeight + 1;
-                const rawCol = Math.floor(relX / colWidth) + 1;
-                const rawRow = Math.floor(relY / rowHeight) + 1;
-
-                const draggedNode = dashboard.nodes.find(
-                    (n) => n.id === dashboard.activeDragNodeId,
+                const rawCol = Math.max(
+                    1,
+                    Math.min(activeCols, Math.floor(relX / colWidth) + 1),
                 );
-                const draggedType = draggedNode?.node_type;
-                const isDraggedAction = draggedType === "action";
+                const rawRow = Math.max(1, Math.floor(relY / rowHeight) + 1);
+
                 const isDraggedWidget = Boolean(
                     draggedType &&
                     draggedType !== "action" &&
@@ -623,54 +662,55 @@
 {:else if !dashboard.auth.authenticated}
     <LoginScreen />
 {:else}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <main
-        data-wallpaper-surface="true"
-        onpointerdown={handleBackgroundPointerDown}
-        onclick={handleBackgroundClick}
-        ondblclick={handleBackgroundDblClick}
-        class="relative min-h-screen pt-2 pb-36 space-y-4 overflow-x-hidden transform-gpu will-change-[transform,opacity] transition-[transform,opacity] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] {isFullModalRecessed
-            ? 'scale-[0.958] opacity-55 pointer-events-none'
-            : isQuickActionRecessed
-              ? 'scale-[0.974] opacity-68 pointer-events-none'
-              : ''}"
+    <DragDropProvider
+        onDragStart={dashboard.handleDragStart}
+        onDragOver={dashboard.handleDragOver}
+        onDragEnd={dashboard.handleDragEnd}
     >
-        <section class="max-w-[1520px] mx-auto px-4">
-            <Header />
-        </section>
-
-        {#if dashboard.workspaces.length === 0}
-            <section
-                class="max-w-md mx-auto mt-20 px-4 text-center select-none"
-            >
-                <div class="ios-modal-surface rounded-[30px] p-8 space-y-4">
-                    <h2
-                        class="text-xl font-semibold text-white ios-tight-tracking"
-                    >
-                        Welcome to Homie
-                    </h2>
-                    <p class="text-xs text-white/60 leading-relaxed">
-                        Create your first Home Screen page to start pinning
-                        apps, widgets, calendars, and Vikunja tasks.
-                    </p>
-                    <button
-                        type="button"
-                        onclick={() => (dashboard.isWorkspaceModalOpen = true)}
-                        class="inline-flex items-center gap-1.5 rounded-full bg-primary text-white px-4 py-2 text-xs font-semibold shadow-md hover:brightness-110 active:scale-95 transition-all cursor-pointer"
-                    >
-                        <Plus class="size-3.5 stroke-[2.5]" />
-                        <span>Create Home Screen</span>
-                    </button>
-                </div>
-            </section>
-        {/if}
-
-        <DragDropProvider
-            onDragStart={dashboard.handleDragStart}
-            onDragOver={dashboard.handleDragOver}
-            onDragEnd={dashboard.handleDragEnd}
+        <!-- svelte-ignore a11y_click_events_have_key_events -->
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+        <main
+            data-wallpaper-surface="true"
+            onpointerdown={handleBackgroundPointerDown}
+            onclick={handleBackgroundClick}
+            ondblclick={handleBackgroundDblClick}
+            class="relative min-h-screen pt-2 pb-36 space-y-4 overflow-x-hidden transition-[transform,opacity] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] {isFullModalRecessed
+                ? 'scale-[0.958] opacity-55 pointer-events-none'
+                : isQuickActionRecessed
+                  ? 'scale-[0.974] opacity-68 pointer-events-none'
+                  : ''}"
         >
+            <section class="max-w-[1520px] mx-auto px-4">
+                <Header />
+            </section>
+
+            {#if dashboard.workspaces.length === 0}
+                <section
+                    class="max-w-md mx-auto mt-20 px-4 text-center select-none"
+                >
+                    <div class="ios-modal-surface rounded-[30px] p-8 space-y-4">
+                        <h2
+                            class="text-xl font-semibold text-white ios-tight-tracking"
+                        >
+                            Welcome to Homie
+                        </h2>
+                        <p class="text-xs text-white/60 leading-relaxed">
+                            Create your first Home Screen page to start pinning
+                            apps, widgets, calendars, and Vikunja tasks.
+                        </p>
+                        <button
+                            type="button"
+                            onclick={() =>
+                                (dashboard.isWorkspaceModalOpen = true)}
+                            class="inline-flex items-center gap-1.5 rounded-full bg-primary text-white px-4 py-2 text-xs font-semibold shadow-md hover:brightness-110 active:scale-95 transition-all cursor-pointer"
+                        >
+                            <Plus class="size-3.5 stroke-[2.5]" />
+                            <span>Create Home Screen</span>
+                        </button>
+                    </div>
+                </section>
+            {/if}
+
             <!-- Continuous Horizontal Spatial Viewport -->
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
@@ -732,7 +772,7 @@
                                 {:else}
                                     <div
                                         aria-hidden="true"
-                                        style="grid-column: 1 / -1; grid-row: 1 / span {dashboard.activeGridRows};"
+                                        style="grid-column: 1 / -1; grid-row: 1 / span {displayGridRows};"
                                         class="pointer-events-none"
                                     ></div>
                                 {/if}
@@ -747,11 +787,20 @@
                     {/each}
                 </div>
             </div>
+        </main>
 
+        <!-- Fixed Viewport-Anchored Page Dots & Global Dock -->
+        <div
+            class="transition-opacity duration-300 {isFullModalRecessed
+                ? 'opacity-45 pointer-events-none'
+                : isQuickActionRecessed
+                  ? 'opacity-65 pointer-events-none'
+                  : ''}"
+        >
             <PageDots />
             <Dock />
-        </DragDropProvider>
-    </main>
+        </div>
+    </DragDropProvider>
 
     <ControlCenterPopover />
     <SpotlightModal />

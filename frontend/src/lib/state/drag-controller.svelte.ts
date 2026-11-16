@@ -1,14 +1,7 @@
 import { arrayMove } from "@dnd-kit/helpers";
 import type { DashboardNode, DragEndEventPayload } from "../types";
 import type { AppearanceController } from "./appearance.svelte";
-import {
-  GRID_COLS,
-  GRID_ROWS,
-  RESPONSIVE_MAX_ROWS,
-  WIDGET_SIZE_PRESETS,
-  type GridRect,
-  type ScreenBounds,
-} from "./constants";
+import { GRID_COLS, WIDGET_SIZE_PRESETS, type GridRect, type ScreenBounds } from "./constants";
 import { computeGridReflow, executeNodeMerge } from "./drag-engine";
 import { clampToGrid, snapToWidgetPreset } from "./grid-math";
 import type { OverlayController } from "./overlays.svelte";
@@ -103,14 +96,13 @@ export class DragController {
     if (!dragged) return;
 
     const cols = this.session.activeGridCols;
-    const rows = cols < GRID_COLS ? RESPONSIVE_MAX_ROWS : GRID_ROWS;
     const baseRect = this.session.getNodeGridRect(dragged);
     const w = dragged.parent_id || dragged.grid_x === -1 ? 1 : baseRect.w;
     const h = dragged.parent_id || dragged.grid_y === -1 ? 1 : baseRect.h;
 
     const targetX = rawCol - Math.min(this.dragGrabOffset.col, w - 1);
     const targetY = rawRow - Math.min(this.dragGrabOffset.row, h - 1);
-    const clamped = clampToGrid(targetX, targetY, w, h, cols, rows);
+    const clamped = clampToGrid(targetX, targetY, w, h, cols, Infinity);
 
     if (
       this.dropPreview &&
@@ -277,10 +269,9 @@ export class DragController {
     if (!node) return;
 
     const cols = this.session.activeGridCols;
-    const rows = cols < GRID_COLS ? RESPONSIVE_MAX_ROWS : GRID_ROWS;
     const baseRect = this.session.getNodeGridRect(node);
     const preset = snapToWidgetPreset(node.node_type, rawW, rawH, cols);
-    const clamped = clampToGrid(baseRect.x, baseRect.y, preset.w, preset.h, cols, rows);
+    const clamped = clampToGrid(baseRect.x, baseRect.y, preset.w, preset.h, cols, Infinity);
 
     if (
       this.dropPreview &&
@@ -313,9 +304,8 @@ export class DragController {
   async setNodeSizePreset(node: DashboardNode, w: number, h: number): Promise<void> {
     this.overlays.closeContextMenu();
     const cols = this.session.activeGridCols;
-    const rows = cols < GRID_COLS ? RESPONSIVE_MAX_ROWS : GRID_ROWS;
     const baseRect = this.session.getNodeGridRect(node);
-    const clamped = clampToGrid(baseRect.x, baseRect.y, Math.min(w, cols), h, cols, rows);
+    const clamped = clampToGrid(baseRect.x, baseRect.y, Math.min(w, cols), h, cols, Infinity);
     const layout = this.computeReflowedPositions(node.id, clamped);
     if (layout) {
       this.previewPositions = layout;
@@ -340,9 +330,8 @@ export class DragController {
 
   async applyNodeResize(node: DashboardNode, w: number, h: number): Promise<void> {
     const cols = this.session.activeGridCols;
-    const rows = cols < GRID_COLS ? RESPONSIVE_MAX_ROWS : GRID_ROWS;
     const baseRect = this.session.getNodeGridRect(node);
-    const clamped = clampToGrid(baseRect.x, baseRect.y, Math.min(w, cols), h, cols, rows);
+    const clamped = clampToGrid(baseRect.x, baseRect.y, Math.min(w, cols), h, cols, Infinity);
     const layout = this.computeReflowedPositions(node.id, clamped);
     if (layout) {
       this.previewPositions = layout;

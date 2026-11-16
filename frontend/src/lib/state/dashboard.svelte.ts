@@ -500,7 +500,7 @@ class DashboardStore {
     return snapToWidgetPreset(nodeType, rawW, rawH, this.activeGridCols);
   }
   clampToGrid(x: number, y: number, width: number, height: number): GridRect {
-    return clampToGrid(x, y, width, height, this.activeGridCols, this.activeGridRows);
+    return clampToGrid(x, y, width, height, this.activeGridCols, Infinity);
   }
   holdGridReflowOnTarget() {
     this.drag.holdGridReflowOnTarget();

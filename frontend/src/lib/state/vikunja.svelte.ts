@@ -1,3 +1,4 @@
+import { htmlToMarkdown, markdownToHtml } from "../markdown";
 import type {
   DashboardNode,
   VikunjaAccount,
@@ -569,7 +570,7 @@ export class VikunjaController {
     plainText: string,
     integrationId?: string | null,
   ): Promise<VikunjaComment | null> {
-    const html = plainTextToTipTapHTML(plainText);
+    const html = markdownToHtml(plainText);
     const res = await apiFetch(
       this.withIntegrationQuery(`/api/v1/vikunja/tasks/${taskId}/comments`, integrationId),
       {
@@ -588,18 +589,8 @@ function taskIDOrThrow(id: number): number {
   return id;
 }
 
-export function htmlToPlainText(html?: string): string {
-  if (!html) return "";
-  if (typeof DOMParser === "undefined") return html.replace(/<[^>]+>/g, " ").trim();
-  const doc = new DOMParser().parseFromString(html, "text/html");
-  return (doc.body.textContent ?? "").replace(/\n{3,}/g, "\n\n").trim();
-}
-
-export function plainTextToTipTapHTML(text: string): string {
-  const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  const lines = escaped.split(/\r?\n/);
-  return lines.map((line) => (line.trim() === "" ? "<p></p>" : `<p>${line}</p>`)).join("");
-}
+export const htmlToPlainText = htmlToMarkdown;
+export const plainTextToTipTapHTML = markdownToHtml;
 
 const SAMPLE_PREVIEW_TASKS: VikunjaTask[] = [
   {

@@ -208,6 +208,7 @@ export interface WorldClockCity {
 
 export interface NodeSettings {
   layouts?: Record<string, ResponsiveRectOverride>;
+  color?: string;
   healthCheck?: boolean;
   healthIgnoreTLS?: boolean;
   location?: string;
@@ -345,7 +346,43 @@ const APPLE_SQUIRCLE_PALETTES = [
   "linear-gradient(160deg, #0f766e 0%, #134e4a 100%)",
 ];
 
+function parseHexRGB(raw: string): [number, number, number] | null {
+  let hex = raw.trim().replace(/^#/, "");
+  if (/^[0-9a-f]{3}$/i.test(hex)) {
+    hex = hex
+      .split("")
+      .map((c) => c + c)
+      .join("");
+  }
+  if (!/^[0-9a-f]{6}$/i.test(hex)) return null;
+  return [
+    parseInt(hex.slice(0, 2), 16),
+    parseInt(hex.slice(2, 4), 16),
+    parseInt(hex.slice(4, 6), 16),
+  ];
+}
+
+export function buildActionColorGradient(color: string): string {
+  const rgb = parseHexRGB(color);
+  if (!rgb) {
+    return `linear-gradient(160deg, ${color} 0%, ${color} 100%)`;
+  }
+  const [r, g, b] = rgb;
+  const topR = Math.round(r + (255 - r) * 0.14);
+  const topG = Math.round(g + (255 - g) * 0.14);
+  const topB = Math.round(b + (255 - b) * 0.14);
+  const botR = Math.round(r * 0.52);
+  const botG = Math.round(g * 0.52);
+  const botB = Math.round(b * 0.52);
+  return `linear-gradient(160deg, rgb(${topR}, ${topG}, ${topB}) 0%, rgb(${botR}, ${botG}, ${botB}) 100%)`;
+}
+
 export function getNodeBrandGradient(node: DashboardNode): string {
+  const customColor = node.settings?.color?.trim();
+  if (customColor) {
+    return buildActionColorGradient(customColor);
+  }
+
   const raw = (node.url || node.title || "").toLowerCase();
   if (raw.includes("github.com")) {
     return "linear-gradient(160deg, #2b3137 0%, #161b22 100%)";

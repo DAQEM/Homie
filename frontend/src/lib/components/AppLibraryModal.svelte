@@ -70,6 +70,7 @@
     {@const hasCustomUpload = Boolean(
         node.icon && node.icon.startsWith("data:"),
     )}
+    {@const hasCustomColor = Boolean(node.settings?.color?.trim())}
     {@const brandGrad = getNodeBrandGradient(node)}
     <button
         type="button"
@@ -77,7 +78,9 @@
         class="group flex flex-col items-center justify-center gap-1.5 text-center select-none cursor-pointer"
     >
         <div
-            style={!hasCustomUpload ? `background: ${brandGrad};` : ""}
+            style={!hasCustomUpload || hasCustomColor
+                ? `background: ${brandGrad};`
+                : ""}
             class="relative size-[60px] rounded-[16px] ios-icon-surface flex items-center justify-center overflow-hidden"
         >
             <div

@@ -17,6 +17,7 @@
     let hasCustomUpload = $derived(
         Boolean(node.icon && node.icon.startsWith("data:")),
     );
+    let hasCustomColor = $derived(Boolean(node.settings?.color?.trim()));
     let brandGradient = $derived(getNodeBrandGradient(node));
     let isMergeTarget = $derived(dashboard.folderMergeTargetId === node.id);
 
@@ -91,7 +92,9 @@
             : ''}"
     >
         <div
-            style={!hasCustomUpload ? `background: ${brandGradient};` : ""}
+            style={!hasCustomUpload || hasCustomColor
+                ? `background: ${brandGradient};`
+                : ""}
             class="relative w-full h-full ios-icon-surface flex items-center justify-center overflow-hidden"
         >
             <!-- Top Specular Gloss Sheen -->
