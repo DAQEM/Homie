@@ -31,10 +31,13 @@ export class OverlayController {
   isSpotlightOpen = $state<boolean>(false);
   spotlightInitialQuery = $state<string>("");
 
-  // Platter Lift Quick Action Context Menu State
+  // Quick Action Context Menu State (Node Platter Lift + Empty Grid / Canvas Menu)
   contextMenu = $state<ContextMenuState>({
     open: false,
+    mode: "node",
     nodeId: null,
+    gridX: null,
+    gridY: null,
     x: 0,
     y: 0,
     anchorRect: null,
@@ -204,7 +207,7 @@ export class OverlayController {
     const vw = typeof window !== "undefined" ? window.innerWidth : 1280;
     const vh = typeof window !== "undefined" ? window.innerHeight : 800;
     const menuWidth = 236;
-    const menuHeight = 310;
+    const menuHeight = 320;
     const pad = 16;
 
     let anchorRect: ScreenBounds | null = null;
@@ -254,7 +257,10 @@ export class OverlayController {
 
     this.contextMenu = {
       open: true,
+      mode: "node",
       nodeId: node.id,
+      gridX: null,
+      gridY: null,
       x,
       y,
       anchorRect,
@@ -263,10 +269,48 @@ export class OverlayController {
     };
   }
 
+  openCanvasContextMenu(event: MouseEvent, gridX: number | null, gridY: number | null): void {
+    event.preventDefault();
+    event.stopPropagation();
+    this.flippedNodeId = null;
+
+    const vw = typeof window !== "undefined" ? window.innerWidth : 1280;
+    const vh = typeof window !== "undefined" ? window.innerHeight : 800;
+    const menuWidth = 256;
+    const menuHeight = 410;
+    const pad = 12;
+
+    const openLeft = event.clientX + menuWidth + pad > vw;
+    const openUp = event.clientY + menuHeight + pad > vh;
+
+    const x = openLeft
+      ? Math.max(pad, event.clientX - menuWidth)
+      : Math.min(vw - menuWidth - pad, event.clientX + 4);
+
+    const y = openUp
+      ? Math.max(pad, event.clientY - menuHeight)
+      : Math.min(vh - menuHeight - pad, event.clientY + 4);
+
+    this.contextMenu = {
+      open: true,
+      mode: "canvas",
+      nodeId: null,
+      gridX,
+      gridY,
+      x,
+      y,
+      anchorRect: null,
+      inDock: false,
+      transformOrigin: `${openUp ? "bottom" : "top"} ${openLeft ? "right" : "left"}`,
+    };
+  }
+
   closeContextMenu(): void {
     if (this.contextMenu.open) {
       this.contextMenu.open = false;
       this.contextMenu.nodeId = null;
+      this.contextMenu.gridX = null;
+      this.contextMenu.gridY = null;
       this.contextMenu.anchorRect = null;
     }
   }

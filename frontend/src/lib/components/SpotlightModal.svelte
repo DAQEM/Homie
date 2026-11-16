@@ -5,6 +5,7 @@
         CheckCircle2,
         Folder,
         Globe,
+        History,
         Layers,
         Search,
         Sparkles,
@@ -16,6 +17,13 @@
         type DashboardNode,
     } from "../types";
 
+    interface FirefoxHistoryItem {
+        url: string;
+        title: string;
+        lastVisitTime?: number;
+        visitCount?: number;
+    }
+
     interface SpotlightResult {
         id: string;
         kind:
@@ -24,6 +32,7 @@
             | "todo"
             | "calendar"
             | "workspace"
+            | "history"
             | "command"
             | "web";
         title: string;
@@ -37,16 +46,141 @@
     let selectedIndex = $state(0);
     let inputEl: HTMLInputElement | undefined = $state();
 
+    let historyBridgeReady = $state(false);
+    let historyItems = $state<FirefoxHistoryItem[]>([]);
+    let latestHistoryReqId = 0;
+    let historyDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function requestFirefoxHistory(searchText: string) {
+        if (typeof window === "undefined") return;
+        const reqId = ++latestHistoryReqId;
+        window.postMessage(
+            {
+                type: "HOMIE_HISTORY_QUERY",
+                requestId: reqId,
+                query: searchText,
+                maxResults: 6,
+            },
+            window.location.origin,
+        );
+    }
+
+    $effect(() => {
+        if (typeof window === "undefined") return;
+
+        const onMessage = (event: MessageEvent) => {
+            if (
+                event.source !== window ||
+                event.origin !== window.location.origin
+            ) {
+                return;
+            }
+            const msg = event.data;
+            if (!msg || typeof msg !== "object") return;
+
+            if (
+                msg.type === "HOMIE_HISTORY_READY" ||
+                msg.type === "HOMIE_HISTORY_PONG"
+            ) {
+                historyBridgeReady = true;
+                if (dashboard.isSpotlightOpen && query.trim().length > 0) {
+                    requestFirefoxHistory(query.trim());
+                }
+                return;
+            }
+
+            if (
+                msg.type === "HOMIE_HISTORY_RESULTS" &&
+                msg.requestId === latestHistoryReqId
+            ) {
+                historyBridgeReady = true;
+                historyItems = Array.isArray(msg.items)
+                    ? (msg.items as FirefoxHistoryItem[])
+                    : [];
+            }
+        };
+
+        window.addEventListener("message", onMessage);
+        window.postMessage(
+            { type: "HOMIE_HISTORY_PING" },
+            window.location.origin,
+        );
+
+        return () => {
+            window.removeEventListener("message", onMessage);
+            if (historyDebounceTimer) {
+                clearTimeout(historyDebounceTimer);
+                historyDebounceTimer = null;
+            }
+        };
+    });
+
     $effect(() => {
         if (dashboard.isSpotlightOpen) {
             query = dashboard.spotlightInitialQuery;
             selectedIndex = 0;
+            historyItems = [];
+            if (typeof window !== "undefined") {
+                window.postMessage(
+                    { type: "HOMIE_HISTORY_PING" },
+                    window.location.origin,
+                );
+            }
             queueMicrotask(() => inputEl?.focus());
+        } else {
+            historyItems = [];
+            if (historyDebounceTimer) {
+                clearTimeout(historyDebounceTimer);
+                historyDebounceTimer = null;
+            }
         }
+    });
+
+    $effect(() => {
+        if (!dashboard.isSpotlightOpen) return;
+        const trimmed = query.trim();
+
+        if (historyDebounceTimer) {
+            clearTimeout(historyDebounceTimer);
+            historyDebounceTimer = null;
+        }
+
+        if (!trimmed) {
+            historyItems = [];
+            return;
+        }
+
+        historyDebounceTimer = setTimeout(() => {
+            historyDebounceTimer = null;
+            requestFirefoxHistory(trimmed);
+        }, 80);
     });
 
     function getWorkspaceName(wsId: string): string {
         return dashboard.workspaces.find((w) => w.id === wsId)?.name ?? "Home";
+    }
+
+    function formatRelativeVisit(ts?: number): string {
+        if (!ts) return "";
+        const diffMs = Math.max(0, Date.now() - ts);
+        const mins = Math.floor(diffMs / 60000);
+        if (mins < 1) return "just now";
+        if (mins < 60) return `${mins}m ago`;
+        const hrs = Math.floor(mins / 60);
+        if (hrs < 24) return `${hrs}h ago`;
+        const days = Math.floor(hrs / 24);
+        if (days < 7) return `${days}d ago`;
+        return new Date(ts).toLocaleDateString();
+    }
+
+    function formatHistoryDisplayUrl(rawUrl: string): string {
+        try {
+            const u = new URL(rawUrl);
+            const path = u.pathname === "/" ? "" : u.pathname;
+            return `${u.hostname}${path}`;
+        } catch {
+            return rawUrl;
+        }
     }
 
     let activeTodoNode = $derived(
@@ -65,6 +199,7 @@
         const q = query.trim();
         const lower = q.toLowerCase();
         const list: SpotlightResult[] = [];
+        const existingActionUrls = new Set<string>();
 
         // 1. Check Quick Commands (`todo: ...`, `remind: ...`, `v: ...`)
         if (
@@ -101,6 +236,9 @@
                 n.title.toLowerCase().includes(lower) ||
                 (n.url && n.url.toLowerCase().includes(lower))
             ) {
+                if (n.url) {
+                    existingActionUrls.add(n.url.replace(/\/+$/, ""));
+                }
                 const wsName = getWorkspaceName(n.workspace_id);
                 const parentFolder = n.parent_id
                     ? dashboard.nodes.find((p) => p.id === n.parent_id)
@@ -235,7 +373,26 @@
                 }
             }
 
-            // 6. Web Search Fallback Row
+            // 6. Firefox Browsing History (from Homie History Bridge extension)
+            for (const item of historyItems) {
+                if (existingActionUrls.has(item.url.replace(/\/+$/, ""))) {
+                    continue;
+                }
+                const shortUrl = formatHistoryDisplayUrl(item.url);
+                const when = formatRelativeVisit(item.lastVisitTime);
+                list.push({
+                    id: `history:${item.url}`,
+                    kind: "history",
+                    title: item.title || shortUrl,
+                    subtitle: `Firefox History • ${shortUrl}${when ? ` • ${when}` : ""}`,
+                    execute: () => {
+                        dashboard.closeSpotlight();
+                        window.open(item.url, "_blank", "noopener,noreferrer");
+                    },
+                });
+            }
+
+            // 7. Web Search Fallback Row
             list.push({
                 id: "web:search",
                 kind: "web",
@@ -259,7 +416,7 @@
             });
         }
 
-        return list.slice(0, 10);
+        return list.slice(0, 14);
     });
 
     function handleKeydown(e: KeyboardEvent) {
@@ -329,7 +486,7 @@
                     bind:value={query}
                     oninput={() => (selectedIndex = 0)}
                     onkeydown={handleKeydown}
-                    placeholder="Spotlight Search — apps, Vikunja tasks, 'todo: task', or web..."
+                    placeholder="Spotlight Search — apps, history, Vikunja tasks, 'todo: task', or web..."
                     class="w-full bg-transparent text-base font-medium text-white placeholder:text-white/38 focus:outline-none"
                 />
                 <kbd
@@ -341,7 +498,7 @@
 
             <!-- Instant Filtered Results List -->
             {#if results.length > 0}
-                <div class="p-2 max-h-[360px] overflow-y-auto space-y-0.5">
+                <div class="p-2 max-h-[380px] overflow-y-auto space-y-0.5">
                     {#each results as item, idx (item.id)}
                         {@const isSelected = idx === selectedIndex}
                         <button
@@ -400,6 +557,12 @@
                                     >
                                         <Layers class="size-4" />
                                     </div>
+                                {:else if item.kind === "history"}
+                                    <div
+                                        class="size-8 rounded-[9px] bg-[#FF9500] text-white flex items-center justify-center shrink-0"
+                                    >
+                                        <History class="size-4" />
+                                    </div>
                                 {:else if item.kind === "command"}
                                     <div
                                         class="size-8 rounded-[9px] bg-[#FF9F0A] text-white flex items-center justify-center shrink-0"
@@ -438,8 +601,10 @@
                 </div>
             {:else}
                 <div class="py-8 text-center text-xs text-white/40">
-                    Type to search apps, folders, Vikunja tasks, calendar
-                    events, or the web.
+                    Type to search apps, {historyBridgeReady
+                        ? "Firefox history, "
+                        : ""}folders, Vikunja tasks, calendar events, or the
+                    web.
                 </div>
             {/if}
 
@@ -457,7 +622,10 @@
                         Task</span
                     >
                 </div>
-                <span><strong class="text-white/70">⇧↵</strong> Web Search</span
+                <span
+                    >{historyBridgeReady ? "History Linked • " : ""}<strong
+                        class="text-white/70">⇧↵</strong
+                    > Web Search</span
                 >
             </div>
         </div>

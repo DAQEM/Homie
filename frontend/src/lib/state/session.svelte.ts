@@ -17,17 +17,12 @@ import {
 import type { PagingController } from "./paging.svelte";
 
 function readStoredWorkspaceId(): string | null {
-  if (typeof sessionStorage !== "undefined") {
-    const tabWs = sessionStorage.getItem(WORKSPACE_STORAGE_KEY);
-    if (tabWs) return tabWs;
-  }
+  if (typeof localStorage === "undefined") return null;
   return localStorage.getItem(WORKSPACE_STORAGE_KEY);
 }
 
 function writeStoredWorkspaceId(id: string): void {
-  if (typeof sessionStorage !== "undefined") {
-    sessionStorage.setItem(WORKSPACE_STORAGE_KEY, id);
-  }
+  if (typeof localStorage === "undefined") return;
   localStorage.setItem(WORKSPACE_STORAGE_KEY, id);
 }
 
@@ -78,13 +73,10 @@ export class SessionStore {
   });
 
   activeGridRows = $derived.by<number>(() => {
-    if (this.activeGridCols >= GRID_COLS) return GRID_ROWS;
     let maxBottom = GRID_ROWS;
     for (const n of this.rootNodes) {
-      const r = this.responsiveRootRects[n.id];
-      if (r) {
-        maxBottom = Math.max(maxBottom, r.y + r.h - 1);
-      }
+      const r = this.getNodeGridRect(n);
+      maxBottom = Math.max(maxBottom, r.y + r.h - 1);
     }
     return maxBottom;
   });
@@ -112,6 +104,20 @@ export class SessionStore {
     this.onUnauthorizedCb?.();
   }
 
+  private syncPagingToActiveWorkspace(): void {
+    const syncedIdx = Math.max(
+      0,
+      this.workspaces.findIndex((w) => w.id === this.activeWorkspaceId),
+    );
+    if (
+      this.pagingRef &&
+      !this.pagingRef.isAnimating &&
+      Math.round(this.pagingRef.pagePosition) !== syncedIdx
+    ) {
+      this.pagingRef.syncToIndex(syncedIdx);
+    }
+  }
+
   hydrateFromLocalStorage(): void {
     this.currentETag = localStorage.getItem(ETAG_KEY);
     const cachedRaw = localStorage.getItem(STORAGE_KEY);
@@ -137,6 +143,8 @@ export class SessionStore {
     } else if (this.workspaces.length > 0) {
       this.activeWorkspaceId = this.workspaces[0].id;
     }
+
+    this.syncPagingToActiveWorkspace();
 
     if (Object.keys(this.preferences).length > 0) {
       this.onPreferencesLoadedCb?.(this.preferences);
@@ -279,6 +287,7 @@ export class SessionStore {
         return;
       }
       if (res.status === 304) {
+        this.syncPagingToActiveWorkspace();
         this.hydrationStatus = "Phase 1: 304 Not Modified";
         return;
       }
@@ -301,7 +310,7 @@ export class SessionStore {
       this.onPreferencesLoadedCb?.(this.preferences);
 
       if (this.activeWorkspaceId && this.workspaces.some((w) => w.id === this.activeWorkspaceId)) {
-        // Keep current workspace
+        writeStoredWorkspaceId(this.activeWorkspaceId);
       } else {
         const storedWs = readStoredWorkspaceId();
         if (storedWs && this.workspaces.some((w) => w.id === storedWs)) {
@@ -315,17 +324,7 @@ export class SessionStore {
         }
       }
 
-      const syncedIdx = Math.max(
-        0,
-        this.workspaces.findIndex((w) => w.id === this.activeWorkspaceId),
-      );
-      if (
-        this.pagingRef &&
-        !this.pagingRef.isAnimating &&
-        Math.round(this.pagingRef.pagePosition) !== syncedIdx
-      ) {
-        this.pagingRef.syncToIndex(syncedIdx);
-      }
+      this.syncPagingToActiveWorkspace();
 
       this.persistSnapshot();
       this.hydrationStatus = "Phase 1: 200 OK";
@@ -388,15 +387,24 @@ export class SessionStore {
       const placed: DashboardNode[] = [];
       for (const n of wsNodes) {
         if (!n.settings) n.settings = {};
-        const clamped = clampToGrid(n.grid_x, n.grid_y, n.width || 1, n.height || 1);
+        const clamped = clampToGrid(
+          n.grid_x,
+          n.grid_y,
+          n.width || 1,
+          n.height || 1,
+          GRID_COLS,
+          Infinity,
+        );
         n.width = clamped.w;
         n.height = clamped.h;
 
-        if (canFitAmongNodes(clamped.x, clamped.y, n.width, n.height, placed)) {
+        if (
+          canFitAmongNodes(clamped.x, clamped.y, n.width, n.height, placed, GRID_COLS, Infinity)
+        ) {
           n.grid_x = clamped.x;
           n.grid_y = clamped.y;
         } else {
-          const free = findFreeSlotAmongNodes(n.width, n.height, placed);
+          const free = findFreeSlotAmongNodes(n.width, n.height, placed, GRID_COLS, Infinity);
           if (free) {
             n.grid_x = free.x;
             n.grid_y = free.y;
@@ -434,7 +442,7 @@ export class SessionStore {
   }
 
   isCellOccupied(x: number, y: number, ignoreNodeId?: string): boolean {
-    if (x < 1 || y < 1 || x > this.activeGridCols || y > this.activeGridRows) return true;
+    if (x < 1 || y < 1 || x > this.activeGridCols) return true;
     for (const n of this.rootNodes) {
       if (n.id === ignoreNodeId) continue;
       const r = this.getNodeGridRect(n);
@@ -447,12 +455,12 @@ export class SessionStore {
 
   canPlaceAt(x: number, y: number, width: number, height: number, ignoreNodeId?: string): boolean {
     const others = this.rootNodes.filter((n) => n.id !== ignoreNodeId);
-    return canFitAmongNodes(x, y, width, height, others);
+    return canFitAmongNodes(x, y, width, height, others, GRID_COLS, Infinity);
   }
 
   findFirstFreeCell(width = 1, height = 1, ignoreNodeId?: string): { x: number; y: number } | null {
     const others = this.rootNodes.filter((n) => n.id !== ignoreNodeId);
-    return findFreeSlotAmongNodes(width, height, others);
+    return findFreeSlotAmongNodes(width, height, others, GRID_COLS, Infinity);
   }
 }
 

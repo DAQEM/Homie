@@ -96,6 +96,7 @@ class DashboardStore {
       this.overlays.flippedNodeId = null;
       this.overlays.isWorkspaceModalOpen = false;
       this.nodeCtrl.closeNodeModal();
+      this.nodeCtrl.copiedNode = null;
     };
 
     this.auth.setOnRevoked(resetAllOnSignOut);
@@ -403,8 +404,23 @@ class DashboardStore {
     this.closeControlCenter();
     this.overlays.openContextMenu(node, event, anchorEl, inDock);
   }
+  openCanvasContextMenu(event: MouseEvent, gridX: number | null, gridY: number | null) {
+    this.closeControlCenter();
+    this.overlays.openCanvasContextMenu(event, gridX, gridY);
+  }
   closeContextMenu() {
     this.overlays.closeContextMenu();
+  }
+
+  refreshAllWidgets(): void {
+    this.overlays.closeContextMenu();
+    void this.vikunja.syncNow();
+    for (const n of this.session.rootNodes) {
+      if (n.node_type === "calendar") {
+        void this.calendar.syncCalendarNodeNow(n.id);
+      }
+    }
+    void this.session.refreshBootstrap(true);
   }
 
   get syncingCalendarNodes() {
@@ -500,10 +516,13 @@ class DashboardStore {
     return snapToWidgetPreset(nodeType, rawW, rawH, this.activeGridCols);
   }
   clampToGrid(x: number, y: number, width: number, height: number): GridRect {
-    return clampToGrid(x, y, width, height, this.activeGridCols, this.activeGridRows);
+    return clampToGrid(x, y, width, height, this.activeGridCols, Infinity);
   }
   holdGridReflowOnTarget() {
     this.drag.holdGridReflowOnTarget();
+  }
+  setPendingContainerMerge(targetId: string | null) {
+    this.drag.setPendingContainerMerge(targetId);
   }
   setFolderMergeTarget(targetId: string | null) {
     this.drag.setFolderMergeTarget(targetId);
@@ -611,7 +630,24 @@ class DashboardStore {
   set nodeModal(v) {
     this.nodeCtrl.nodeModal = v;
   }
+  get copiedNode() {
+    return this.nodeCtrl.copiedNode;
+  }
 
+  copyNode(nodeId: string) {
+    this.nodeCtrl.copyNode(nodeId);
+  }
+  pasteCopiedNodeAt(gridX?: number | null, gridY?: number | null) {
+    return this.nodeCtrl.pasteCopiedNodeAt(gridX, gridY);
+  }
+  quickCreateNode(
+    nodeType: NodeType,
+    gridX?: number | null,
+    gridY?: number | null,
+    overrideSize?: { w: number; h: number },
+  ) {
+    return this.nodeCtrl.quickCreateNode(nodeType, gridX, gridY, overrideSize);
+  }
   startGalleryWidgetDrag(clientX: number, clientY: number, previewBounds: ScreenBounds) {
     return this.nodeCtrl.startGalleryWidgetDrag(clientX, clientY, previewBounds);
   }

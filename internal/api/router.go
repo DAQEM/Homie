@@ -1870,10 +1870,7 @@ func clampNodeToGrid(x, y, w, h int32) (int32, int32, int32, int32) {
 	if x == -1 && y == -1 {
 		return -1, -1, 1, 1
 	}
-	const (
-		gridCols = int32(16)
-		gridRows = int32(8)
-	)
+	const gridCols = int32(16)
 
 	if w < 1 {
 		w = 1
@@ -1882,8 +1879,6 @@ func clampNodeToGrid(x, y, w, h int32) (int32, int32, int32, int32) {
 	}
 	if h < 1 {
 		h = 1
-	} else if h > gridRows {
-		h = gridRows
 	}
 
 	if x < 1 {
@@ -1893,8 +1888,6 @@ func clampNodeToGrid(x, y, w, h int32) (int32, int32, int32, int32) {
 	}
 	if y < 1 {
 		y = 1
-	} else if y+h-1 > gridRows {
-		y = gridRows - h + 1
 	}
 
 	return x, y, w, h

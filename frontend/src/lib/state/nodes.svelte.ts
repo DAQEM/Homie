@@ -8,7 +8,7 @@ import {
 } from "../types";
 import type { AppearanceController } from "./appearance.svelte";
 import type { CalendarController } from "./calendar.svelte";
-import { GRID_COLS, GRID_ROWS, type ScreenBounds } from "./constants";
+import { DEFAULT_NODE_SIZES, GRID_COLS, type ScreenBounds } from "./constants";
 import type { DragController } from "./drag-controller.svelte";
 import { clampToGrid } from "./grid-math";
 import type { OverlayController } from "./overlays.svelte";
@@ -32,6 +32,8 @@ export class NodeController {
   private drag: DragController;
   private calendar: CalendarController;
   private vikunja: VikunjaController;
+
+  copiedNode = $state<DashboardNode | null>(null);
 
   nodeModal = $state<NodeModalState>({
     open: false,
@@ -65,6 +67,167 @@ export class NodeController {
     this.vikunja = vikunja;
   }
 
+  copyNode(nodeId: string): void {
+    this.overlays.closeContextMenu();
+    const source = this.session.nodes.find((n) => n.id === nodeId);
+    if (!source) return;
+    this.copiedNode = structuredClone($state.snapshot(source));
+  }
+
+  async pasteCopiedNodeAt(gridX?: number | null, gridY?: number | null): Promise<void> {
+    this.overlays.closeContextMenu();
+    const source = this.copiedNode;
+    if (!source || !this.session.activeWorkspace) return;
+
+    const w =
+      source.node_type === "action"
+        ? 1
+        : Math.max(1, Math.min(this.session.activeGridCols, source.width || 1));
+    const h = source.node_type === "action" ? 1 : Math.max(1, source.height || 1);
+
+    let targetX = gridX ?? 1;
+    let targetY = gridY ?? 1;
+
+    if (gridX != null && gridY != null && this.session.canPlaceAt(targetX, targetY, w, h)) {
+      const clamped = clampToGrid(targetX, targetY, w, h, this.session.activeGridCols, Infinity);
+      if (this.session.canPlaceAt(clamped.x, clamped.y, w, h)) {
+        targetX = clamped.x;
+        targetY = clamped.y;
+      } else {
+        const free = this.session.findFirstFreeCell(w, h);
+        if (!free) return;
+        targetX = free.x;
+        targetY = free.y;
+      }
+    } else {
+      const free = this.session.findFirstFreeCell(w, h);
+      if (!free) return;
+      targetX = free.x;
+      targetY = free.y;
+    }
+
+    const nowIso = new Date().toISOString();
+    const optimisticNode: DashboardNode = {
+      id: generateUUID(),
+      workspace_id: this.session.activeWorkspace.id,
+      parent_id: null,
+      sort_order: targetY * 100 + targetX,
+      grid_x: targetX,
+      grid_y: targetY,
+      title: source.title,
+      icon: source.icon,
+      node_type: source.node_type,
+      url: source.url,
+      width: w,
+      height: h,
+      settings: structuredClone($state.snapshot(source.settings ?? {})),
+      created_at: nowIso,
+      updated_at: nowIso,
+    };
+
+    this.session.nodes.push(optimisticNode);
+    this.session.persistSnapshot();
+
+    const res = await apiFetch("/api/v1/nodes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(optimisticNode),
+    });
+
+    if (!res.ok) {
+      this.session.nodes = this.session.nodes.filter((n) => n.id !== optimisticNode.id);
+      this.session.persistSnapshot();
+    } else if (optimisticNode.node_type === "calendar") {
+      void this.calendar.syncCalendarNodeNow(optimisticNode.id);
+    }
+  }
+
+  async quickCreateNode(
+    nodeType: NodeType,
+    gridX?: number | null,
+    gridY?: number | null,
+    overrideSize?: { w: number; h: number },
+  ): Promise<void> {
+    this.overlays.closeContextMenu();
+    if (!this.session.activeWorkspace) return;
+
+    const baseSize = overrideSize ?? DEFAULT_NODE_SIZES[nodeType];
+    const w = Math.max(1, Math.min(this.session.activeGridCols, baseSize.w));
+    const h = Math.max(1, baseSize.h);
+
+    let targetX = gridX ?? 1;
+    let targetY = gridY ?? 1;
+
+    if (gridX != null && gridY != null) {
+      const clamped = clampToGrid(targetX, targetY, w, h, this.session.activeGridCols, Infinity);
+      if (this.session.canPlaceAt(clamped.x, clamped.y, w, h)) {
+        targetX = clamped.x;
+        targetY = clamped.y;
+      } else {
+        const free = this.session.findFirstFreeCell(w, h);
+        if (!free) return;
+        targetX = free.x;
+        targetY = free.y;
+      }
+    } else {
+      const free = this.session.findFirstFreeCell(w, h);
+      if (!free) return;
+      targetX = free.x;
+      targetY = free.y;
+    }
+
+    const defaultSettingsByType: Partial<Record<NodeType, NodeSettings>> = {
+      clock: { timezone: "Europe/Amsterdam", flag: "🇳🇱", sweepSeconds: true },
+      weather: { location: "Amsterdam", tempUnit: "C" },
+      search: {
+        placeholder: "Search Web or Spotlight (⌘K)...",
+        engineUrl: "https://www.google.com/search?q=",
+      },
+      todo: {
+        vikunjaIntegrationId: this.vikunja.accounts[0]?.integrationId,
+        vikunjaFilter: "all",
+        vikunjaShowCompleted: false,
+      },
+      calendar: { timezone: "Europe/Amsterdam", calendarFeeds: [] },
+      container: {},
+    };
+
+    const nowIso = new Date().toISOString();
+    const optimisticNode: DashboardNode = {
+      id: generateUUID(),
+      workspace_id: this.session.activeWorkspace.id,
+      parent_id: null,
+      sort_order: targetY * 100 + targetX,
+      grid_x: targetX,
+      grid_y: targetY,
+      title: DEFAULT_TITLE_MAP[nodeType],
+      icon: null,
+      node_type: nodeType,
+      url: null,
+      width: w,
+      height: h,
+      settings: defaultSettingsByType[nodeType] ?? {},
+      created_at: nowIso,
+      updated_at: nowIso,
+    };
+
+    this.session.nodes.push(optimisticNode);
+    this.session.persistSnapshot();
+
+    const res = await apiFetch("/api/v1/nodes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(optimisticNode),
+    });
+
+    if (!res.ok) {
+      this.session.nodes = this.session.nodes.filter((n) => n.id !== optimisticNode.id);
+      this.session.persistSnapshot();
+    } else if (optimisticNode.node_type === "calendar") {
+      void this.calendar.syncCalendarNodeNow(optimisticNode.id);
+    }
+  }
+
   async startGalleryWidgetDrag(
     clientX: number,
     clientY: number,
@@ -74,7 +237,7 @@ export class NodeController {
 
     const t = this.nodeModal.node_type;
     const width = Math.max(1, Math.min(GRID_COLS, Number(this.nodeModal.width) || 2));
-    const height = Math.max(1, Math.min(GRID_ROWS, Number(this.nodeModal.height) || 2));
+    const height = Math.max(1, Number(this.nodeModal.height) || 2);
     const free = this.session.findFirstFreeCell(width, height) ?? { x: 1, y: 1 };
 
     const finalTitle = this.nodeModal.title.trim() || DEFAULT_TITLE_MAP[t];
@@ -421,6 +584,7 @@ export class NodeController {
       width: 1,
       height: 1,
       settings: {
+        color: "",
         healthCheck: false,
         healthIgnoreTLS: false,
         location: "Amsterdam",
@@ -494,9 +658,7 @@ export class NodeController {
         ? 1
         : Math.max(1, Math.min(GRID_COLS, Number(this.nodeModal.width) || 1));
     const height =
-      isAction || isDockedOrChild
-        ? 1
-        : Math.max(1, Math.min(GRID_ROWS, Number(this.nodeModal.height) || 1));
+      isAction || isDockedOrChild ? 1 : Math.max(1, Number(this.nodeModal.height) || 1);
 
     let finalX = this.nodeModal.grid_x;
     let finalY = this.nodeModal.grid_y;
@@ -512,7 +674,7 @@ export class NodeController {
       } else {
         const fallback = this.session.findFirstFreeCell(width, height, ignoreId);
         if (!fallback) {
-          return `Not enough free space on the 16x8 grid for a ${width}x${height} node.`;
+          return `Not enough free space on the 16-column grid for a ${width}x${height} node.`;
         }
         finalX = fallback.x;
         finalY = fallback.y;
@@ -522,6 +684,10 @@ export class NodeController {
     const finalTitle = this.nodeModal.title.trim() || DEFAULT_TITLE_MAP[this.nodeModal.node_type];
 
     const settingsSnapshot = structuredClone($state.snapshot(this.nodeModal.settings));
+    if (typeof settingsSnapshot.color === "string" && settingsSnapshot.color.trim() === "") {
+      delete settingsSnapshot.color;
+    }
+
     if (
       this.nodeModal.node_type === "calendar" &&
       settingsSnapshot.icalUrl &&

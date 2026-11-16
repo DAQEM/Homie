@@ -2,7 +2,6 @@ import type { DashboardNode, NodeType } from "../types";
 import {
   GRID_COLS,
   GRID_ROWS,
-  RESPONSIVE_MAX_ROWS,
   WIDGET_SIZE_PRESETS,
   type GridRect,
   type WidgetSizePreset,
@@ -35,12 +34,13 @@ export function clampToGrid(
   width: number,
   height: number,
   cols = GRID_COLS,
-  rows = GRID_ROWS,
+  rows = Infinity,
 ): GridRect {
   const w = Math.max(1, Math.min(width, cols));
-  const h = Math.max(1, Math.min(height, rows));
+  const h = Math.max(1, Number.isFinite(rows) ? Math.min(height, rows) : height);
   const clampedX = Math.max(1, Math.min(x, cols - w + 1));
-  const clampedY = Math.max(1, Math.min(y, rows - h + 1));
+  const maxY = Number.isFinite(rows) ? Math.max(1, rows - h + 1) : Infinity;
+  const clampedY = Math.max(1, Math.min(y, maxY));
   return { x: clampedX, y: clampedY, w, h };
 }
 
@@ -52,9 +52,12 @@ export function canFitRectAmong(
   rect: GridRect,
   placed: GridRect[],
   cols = GRID_COLS,
-  rows = GRID_ROWS,
+  rows = Infinity,
 ): boolean {
-  if (rect.x < 1 || rect.y < 1 || rect.x + rect.w - 1 > cols || rect.y + rect.h - 1 > rows) {
+  if (rect.x < 1 || rect.y < 1 || rect.x + rect.w - 1 > cols) {
+    return false;
+  }
+  if (Number.isFinite(rows) && rect.y + rect.h - 1 > rows) {
     return false;
   }
   for (const other of placed) {
@@ -70,12 +73,19 @@ export function findClosestSlotAmong(
   h: number,
   placed: GridRect[],
   cols = GRID_COLS,
-  rows = GRID_ROWS,
+  rows = Infinity,
 ): { x: number; y: number } | null {
+  let maxBottom = 0;
+  for (const r of placed) {
+    maxBottom = Math.max(maxBottom, r.y + r.h - 1);
+  }
+  const naturalLimit = Math.max(GRID_ROWS, prefY, maxBottom) + h + 16;
+  const searchMaxY = Number.isFinite(rows) ? Math.min(rows - h + 1, naturalLimit) : naturalLimit;
+
   let best: { x: number; y: number } | null = null;
   let bestDist = Infinity;
 
-  for (let y = 1; y <= rows - h + 1; y++) {
+  for (let y = 1; y <= searchMaxY; y++) {
     for (let x = 1; x <= cols - w + 1; x++) {
       if (canFitRectAmong({ x, y, w, h }, placed, cols, rows)) {
         const dist = Math.abs(x - prefX) + Math.abs(y - prefY) * 1.6 + y * 0.05 + x * 0.01;
@@ -96,9 +106,12 @@ export function canFitAmongNodes(
   height: number,
   existing: DashboardNode[],
   cols = GRID_COLS,
-  rows = GRID_ROWS,
+  rows = Infinity,
 ): boolean {
-  if (x < 1 || y < 1 || x + width - 1 > cols || y + height - 1 > rows) {
+  if (x < 1 || y < 1 || x + width - 1 > cols) {
+    return false;
+  }
+  if (Number.isFinite(rows) && y + height - 1 > rows) {
     return false;
   }
 
@@ -126,9 +139,18 @@ export function findFreeSlotAmongNodes(
   height: number,
   existing: DashboardNode[],
   cols = GRID_COLS,
-  rows = GRID_ROWS,
+  rows = Infinity,
 ): { x: number; y: number } | null {
-  for (let y = 1; y <= rows - height + 1; y++) {
+  let maxBottom = 0;
+  for (const n of existing) {
+    maxBottom = Math.max(maxBottom, n.grid_y + (n.height || 1) - 1);
+  }
+  const naturalLimit = Math.max(GRID_ROWS, maxBottom) + height + 16;
+  const searchMaxY = Number.isFinite(rows)
+    ? Math.min(rows - height + 1, naturalLimit)
+    : naturalLimit;
+
+  for (let y = 1; y <= searchMaxY; y++) {
     for (let x = 1; x <= cols - width + 1; x++) {
       if (canFitAmongNodes(x, y, width, height, existing, cols, rows)) {
         return { x, y };
@@ -168,9 +190,9 @@ export function computeResponsivePacking(
     const ov = n.settings?.layouts?.[key];
     if (ov) {
       const w = Math.max(1, Math.min(ov.w || n.width || 1, cols));
-      const h = Math.max(1, Math.min(ov.h || n.height || 1, RESPONSIVE_MAX_ROWS));
-      const clamped = clampToGrid(ov.x, ov.y, w, h, cols, RESPONSIVE_MAX_ROWS);
-      if (canFitRectAmong(clamped, placed, cols, RESPONSIVE_MAX_ROWS)) {
+      const h = Math.max(1, ov.h || n.height || 1);
+      const clamped = clampToGrid(ov.x, ov.y, w, h, cols, Infinity);
+      if (canFitRectAmong(clamped, placed, cols, Infinity)) {
         result[n.id] = clamped;
         placed.push(clamped);
         continue;
@@ -182,11 +204,9 @@ export function computeResponsivePacking(
   // 2. Pack remaining nodes in top-to-bottom, left-to-right reading order
   for (const n of remaining) {
     const w = Math.max(1, Math.min(n.width || 1, cols));
-    const h = Math.max(1, Math.min(n.height || 1, RESPONSIVE_MAX_ROWS));
-    const slot = findClosestSlotAmong(1, 1, w, h, placed, cols, RESPONSIVE_MAX_ROWS);
-    const rect: GridRect = slot
-      ? { x: slot.x, y: slot.y, w, h }
-      : { x: 1, y: RESPONSIVE_MAX_ROWS, w, h };
+    const h = Math.max(1, n.height || 1);
+    const slot = findClosestSlotAmong(1, 1, w, h, placed, cols, Infinity);
+    const rect: GridRect = slot ? { x: slot.x, y: slot.y, w, h } : { x: 1, y: 1, w, h };
     result[n.id] = rect;
     placed.push(rect);
   }

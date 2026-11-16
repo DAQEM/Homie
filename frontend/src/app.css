@@ -254,6 +254,158 @@
 }
 
 /* ==========================================================================
+   Markdown Rendering Styles (Task Descriptions & Comments)
+   ========================================================================== */
+.ios-markdown {
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.9);
+  word-break: break-word;
+  user-select: text;
+}
+
+.ios-markdown > *:first-child {
+  margin-top: 0;
+}
+
+.ios-markdown > *:last-child {
+  margin-bottom: 0;
+}
+
+.ios-markdown p {
+  margin: 0.45rem 0;
+}
+
+.ios-markdown h1,
+.ios-markdown h2,
+.ios-markdown h3,
+.ios-markdown h4,
+.ios-markdown h5,
+.ios-markdown h6 {
+  font-weight: 700;
+  color: #ffffff;
+  letter-spacing: -0.02em;
+  margin: 0.85rem 0 0.35rem;
+  line-height: 1.3;
+}
+
+.ios-markdown h1 {
+  font-size: 1.15rem;
+}
+
+.ios-markdown h2 {
+  font-size: 1.02rem;
+}
+
+.ios-markdown h3 {
+  font-size: 0.92rem;
+}
+
+.ios-markdown ul:not([data-type="taskList"]) {
+  list-style-type: disc;
+  padding-left: 1.25rem;
+  margin: 0.4rem 0;
+}
+
+.ios-markdown ol {
+  list-style-type: decimal;
+  padding-left: 1.25rem;
+  margin: 0.4rem 0;
+}
+
+.ios-markdown li {
+  margin: 0.2rem 0;
+}
+
+.ios-markdown li > p {
+  margin: 0;
+}
+
+.ios-markdown ul[data-type="taskList"] {
+  list-style: none;
+  padding-left: 0.15rem;
+  margin: 0.45rem 0;
+}
+
+.ios-markdown li[data-type="taskItem"] {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin: 0.25rem 0;
+}
+
+.ios-markdown li[data-type="taskItem"] > label {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 0.2rem;
+  cursor: pointer;
+}
+
+.ios-markdown li[data-type="taskItem"] > label input[type="checkbox"] {
+  accent-color: #0a84ff;
+  width: 0.9rem;
+  height: 0.9rem;
+  cursor: pointer;
+}
+
+.ios-markdown li[data-type="taskItem"][data-checked="true"] > div {
+  text-decoration: line-through;
+  color: rgba(255, 255, 255, 0.48);
+}
+
+.ios-markdown blockquote {
+  border-left: 3px solid rgba(10, 132, 255, 0.75);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 0.35rem 0.75rem;
+  margin: 0.5rem 0;
+  border-radius: 0 10px 10px 0;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.ios-markdown code {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  background: rgba(255, 255, 255, 0.11);
+  padding: 0.1rem 0.35rem;
+  border-radius: 6px;
+  color: #64d2ff;
+}
+
+.ios-markdown pre {
+  background: rgba(0, 0, 0, 0.42);
+  border: 0.5px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  padding: 0.65rem 0.85rem;
+  margin: 0.55rem 0;
+  overflow-x: auto;
+}
+
+.ios-markdown pre code {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  color: rgba(245, 245, 247, 0.92);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.ios-markdown a {
+  color: #64d2ff;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.ios-markdown a:hover {
+  color: #0a84ff;
+}
+
+.ios-markdown hr {
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  margin: 0.75rem 0;
+}
+
+/* ==========================================================================
    Step 2: Tactile Press, Foreground Platter Lift & Quick Action Unfurl
    ========================================================================== */
 .ios-tactile-press {

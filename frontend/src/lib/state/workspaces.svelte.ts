@@ -8,10 +8,9 @@ import type { PagingController } from "./paging.svelte";
 import { apiFetch, type SessionStore } from "./session.svelte";
 
 function persistWorkspaceSelection(id: string): void {
-  if (typeof sessionStorage !== "undefined") {
-    sessionStorage.setItem(WORKSPACE_STORAGE_KEY, id);
+  if (typeof localStorage !== "undefined") {
+    localStorage.setItem(WORKSPACE_STORAGE_KEY, id);
   }
-  localStorage.setItem(WORKSPACE_STORAGE_KEY, id);
 }
 
 export class WorkspaceController {

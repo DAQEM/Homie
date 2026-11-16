@@ -113,6 +113,14 @@
         },
     });
 
+    let isSiblingReorderTarget = $derived(
+        (inContainer || inDock) &&
+            droppable.isDropTarget &&
+            dashboard.activeDragNodeId !== null &&
+            dashboard.activeDragNodeId !== node.id &&
+            !dashboard.dropPreview,
+    );
+
     $effect(() => {
         if (!isHoldingGesture) return;
         const onWindowUp = () => clearGestureTimers();
@@ -383,7 +391,11 @@
     draggable.isDragging ||
     isDirectDragTarget
         ? 'z-40'
-        : 'z-10'} {isContextTarget ? 'opacity-0 pointer-events-none' : ''}"
+        : 'z-10'} {isContextTarget
+        ? 'opacity-0 pointer-events-none'
+        : ''} {isSiblingReorderTarget
+        ? 'ring-2 ring-primary/80 bg-primary/15 rounded-[18px] scale-95 transition-all duration-150'
+        : ''}"
 >
     <div
         {@attach draggable.attach}

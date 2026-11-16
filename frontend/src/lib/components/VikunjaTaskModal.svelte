@@ -1,21 +1,24 @@
 <script lang="ts">
     import {
         Check,
+        Eye,
         ExternalLink,
         Folder,
         MessageSquare,
+        Pencil,
         Send,
         Star,
         Tag,
         Trash2,
         X,
     } from "@lucide/svelte";
-    import { dashboard } from "../state/dashboard.svelte";
     import {
-        htmlToPlainText,
-        plainTextToTipTapHTML,
-        VIKUNJA_ZERO_DATE,
-    } from "../state/vikunja.svelte";
+        htmlToMarkdown,
+        markdownToHtml,
+        renderMarkdownSafeHtml,
+    } from "../markdown";
+    import { dashboard } from "../state/dashboard.svelte";
+    import { VIKUNJA_ZERO_DATE } from "../state/vikunja.svelte";
     import type { VikunjaComment, VikunjaTask } from "../types";
 
     const PRIORITIES = [
@@ -36,36 +39,95 @@
     );
     let accountLabels = $derived(dashboard.vikunja.getLabels(integrationId));
 
+    let loadedTaskId = $state<number | null>(null);
     let titleDraft = $state("");
+    let titleDirty = $state(false);
+    let titleFocused = $state(false);
+
     let descDraft = $state("");
+    let lastSavedDescMd = $state("");
+    let descDirty = $state(false);
+    let descFocused = $state(false);
+    let isEditingDesc = $state(false);
+    let isSavingDesc = $state(false);
+
     let dueInput = $state("");
+    let dueFocused = $state(false);
+
     let comments = $state<VikunjaComment[]>([]);
     let commentDraft = $state("");
     let loadingComments = $state(false);
 
+    let descTextareaEl: HTMLTextAreaElement | undefined = $state();
+    let markdownPreviewEl: HTMLDivElement | undefined = $state();
+
+    let renderedDescriptionHtml = $derived(
+        renderMarkdownSafeHtml(
+            isEditingDesc || descDirty
+                ? descDraft
+                : (task?.description ?? descDraft),
+        ),
+    );
+
     $effect(() => {
-        if (task) {
-            titleDraft = task.title;
-            descDraft = htmlToPlainText(task.description);
-            dueInput = task.due_date ? task.due_date.slice(0, 16) : "";
-            loadingComments = true;
-            void dashboard.vikunja
-                .fetchComments(task.id, integrationId)
-                .then((list) => {
-                    comments = list;
-                    loadingComments = false;
-                });
-        } else {
+        if (!task) {
+            loadedTaskId = null;
+            titleDirty = false;
+            descDirty = false;
+            isEditingDesc = false;
+            isSavingDesc = false;
             comments = [];
             commentDraft = "";
+            return;
+        }
+
+        if (task.id !== loadedTaskId) {
+            const targetId = task.id;
+            loadedTaskId = targetId;
+            titleDirty = false;
+            descDirty = false;
+            isEditingDesc = false;
+            isSavingDesc = false;
+
+            titleDraft = task.title;
+            const md = htmlToMarkdown(task.description);
+            descDraft = md;
+            lastSavedDescMd = md;
+            dueInput = task.due_date ? task.due_date.slice(0, 16) : "";
+
+            loadingComments = true;
+            void dashboard.vikunja
+                .fetchComments(targetId, integrationId)
+                .then((list) => {
+                    if (loadedTaskId === targetId) {
+                        comments = list;
+                        loadingComments = false;
+                    }
+                });
+            return;
+        }
+
+        // Background 20s SSE refreshes must never overwrite actively edited / dirty fields
+        if (!titleFocused && !titleDirty) {
+            titleDraft = task.title;
+        }
+        if (!descFocused && !descDirty && !isSavingDesc && !isEditingDesc) {
+            const incomingMd = htmlToMarkdown(task.description);
+            descDraft = incomingMd;
+            lastSavedDescMd = incomingMd;
+        }
+        if (!dueFocused) {
+            dueInput = task.due_date ? task.due_date.slice(0, 16) : "";
         }
     });
 
     async function commitTitle() {
+        titleFocused = false;
         if (!task) return;
         const trimmed = titleDraft.trim();
         if (!trimmed) {
             titleDraft = task.title;
+            titleDirty = false;
             return;
         }
         if (trimmed !== task.title) {
@@ -75,23 +137,107 @@
                 integrationId,
             );
         }
+        titleDirty = false;
     }
 
-    async function commitDescription() {
+    async function commitDescription(exitEdit = false) {
         if (!task) return;
-        const currentPlain = htmlToPlainText(task.description);
-        if (descDraft.trim() !== currentPlain.trim()) {
-            await dashboard.vikunja.updateTask(
+        const currentMd = descDraft.replace(/\r\n/g, "\n").trimEnd();
+        if (currentMd === lastSavedDescMd.trimEnd()) {
+            descDirty = false;
+            if (exitEdit) isEditingDesc = false;
+            return;
+        }
+
+        isSavingDesc = true;
+        try {
+            const htmlPayload = markdownToHtml(currentMd);
+            const updated = await dashboard.vikunja.updateTask(
                 task.id,
-                {
-                    description: plainTextToTipTapHTML(descDraft),
-                },
+                { description: htmlPayload },
                 integrationId,
             );
+            if (updated) {
+                lastSavedDescMd = currentMd;
+                if (descDraft.replace(/\r\n/g, "\n").trimEnd() === currentMd) {
+                    descDirty = false;
+                }
+            }
+        } finally {
+            isSavingDesc = false;
+            if (exitEdit) isEditingDesc = false;
+        }
+    }
+
+    function enterDescEdit() {
+        isEditingDesc = true;
+        queueMicrotask(() => {
+            if (descTextareaEl) {
+                descTextareaEl.focus();
+                const len = descTextareaEl.value.length;
+                descTextareaEl.setSelectionRange(len, len);
+            }
+        });
+    }
+
+    function cancelDescEdit() {
+        descDraft = lastSavedDescMd;
+        descDirty = false;
+        isEditingDesc = false;
+    }
+
+    function handleDescKeydown(e: KeyboardEvent) {
+        if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+            e.preventDefault();
+            void commitDescription(true);
+            return;
+        }
+        if (e.key === "Tab") {
+            e.preventDefault();
+            const el = e.currentTarget as HTMLTextAreaElement;
+            const start = el.selectionStart;
+            const end = el.selectionEnd;
+            descDraft = descDraft.slice(0, start) + "  " + descDraft.slice(end);
+            descDirty = true;
+            queueMicrotask(() => {
+                el.selectionStart = el.selectionEnd = start + 2;
+            });
+        }
+    }
+
+    function handlePreviewClick(e: MouseEvent) {
+        const target = e.target as HTMLElement | null;
+        if (!target) return;
+
+        // Allow toggling Markdown task list checkboxes directly in Preview mode
+        if (target.matches('input[type="checkbox"]') && markdownPreviewEl) {
+            e.stopPropagation();
+            const checkboxes = Array.from(
+                markdownPreviewEl.querySelectorAll('input[type="checkbox"]'),
+            );
+            const idx = checkboxes.indexOf(target as HTMLInputElement);
+            if (idx >= 0) {
+                let seen = 0;
+                const nextMd = descDraft.replace(
+                    /^(\s*[-*+]\s+\[)([ xX])(\]\s+)/gm,
+                    (full, pre: string, stateChar: string, post: string) => {
+                        if (seen++ === idx) {
+                            const nextChar =
+                                stateChar.toLowerCase() === "x" ? " " : "x";
+                            return `${pre}${nextChar}${post}`;
+                        }
+                        return full;
+                    },
+                );
+                descDraft = nextMd;
+                descDirty = true;
+                void commitDescription(false);
+            }
         }
     }
 
     async function commitDueDate() {
+        dueFocused = false;
         if (!task) return;
         if (!dueInput) {
             await dashboard.vikunja.updateTask(
@@ -130,6 +276,16 @@
         }
     }
 
+    async function handleClose() {
+        if (titleDirty) {
+            await commitTitle();
+        }
+        if (descDirty) {
+            await commitDescription(true);
+        }
+        dashboard.closeVikunjaModal();
+    }
+
     async function handleDelete() {
         if (!task) return;
         const id = task.id;
@@ -147,8 +303,7 @@
         aria-modal="true"
         aria-label={task.title}
         tabindex="-1"
-        onclick={(e) =>
-            e.target === e.currentTarget && dashboard.closeVikunjaModal()}
+        onclick={(e) => e.target === e.currentTarget && void handleClose()}
         class="fixed inset-0 z-50 bg-black/50 backdrop-blur-2xl flex items-center justify-center p-4 select-none"
     >
         <div
@@ -232,7 +387,7 @@
 
                     <button
                         type="button"
-                        onclick={() => dashboard.closeVikunjaModal()}
+                        onclick={() => void handleClose()}
                         class="size-8 rounded-full bg-white/12 hover:bg-white/22 flex items-center justify-center text-white cursor-pointer"
                     >
                         <X class="size-4" />
@@ -246,6 +401,8 @@
                 <input
                     type="text"
                     bind:value={titleDraft}
+                    onfocus={() => (titleFocused = true)}
+                    oninput={() => (titleDirty = true)}
                     onblur={commitTitle}
                     onkeydown={(e) =>
                         e.key === "Enter" && e.currentTarget.blur()}
@@ -323,7 +480,9 @@
                         <input
                             type="datetime-local"
                             bind:value={dueInput}
+                            onfocus={() => (dueFocused = true)}
                             onchange={commitDueDate}
+                            onblur={() => (dueFocused = false)}
                             class="w-full bg-transparent text-[11px] font-semibold text-white ios-tabular-nums focus:outline-none"
                         />
                     </label>
@@ -396,20 +555,120 @@
                     </div>
                 {/if}
 
-                <!-- Description -->
-                <div class="space-y-1.5">
-                    <div
-                        class="text-[10.5px] font-semibold uppercase tracking-wider text-white/45"
-                    >
-                        Notes / Description
+                <!-- Markdown & Multi-Line Description -->
+                <div class="space-y-2">
+                    <div class="flex items-center justify-between gap-2">
+                        <div class="flex items-center gap-2">
+                            <span
+                                class="text-[10.5px] font-semibold uppercase tracking-wider text-white/45"
+                            >
+                                Description (Markdown)
+                            </span>
+                            {#if isSavingDesc}
+                                <span class="text-[10px] text-primary">
+                                    Saving…
+                                </span>
+                            {:else if descDirty}
+                                <span class="text-[10px] text-[#FF9F0A]">
+                                    Unsaved changes
+                                </span>
+                            {/if}
+                        </div>
+
+                        <div class="flex items-center gap-1.5">
+                            {#if isEditingDesc}
+                                <button
+                                    type="button"
+                                    onpointerdown={(e) => e.preventDefault()}
+                                    onclick={() => void commitDescription(true)}
+                                    class="px-2.5 py-1 rounded-full bg-primary text-white text-[10.5px] font-semibold flex items-center gap-1 hover:brightness-110 cursor-pointer"
+                                >
+                                    <Check class="size-3 stroke-[2.5]" />
+                                    <span>Save</span>
+                                </button>
+                                <button
+                                    type="button"
+                                    onpointerdown={(e) => e.preventDefault()}
+                                    onclick={cancelDescEdit}
+                                    class="px-2.5 py-1 rounded-full bg-white/10 hover:bg-white/18 text-white/75 text-[10.5px] font-semibold cursor-pointer"
+                                >
+                                    Cancel
+                                </button>
+                            {:else}
+                                <button
+                                    type="button"
+                                    onclick={enterDescEdit}
+                                    class="px-2.5 py-1 rounded-full bg-white/10 hover:bg-white/18 text-white/80 hover:text-white text-[10.5px] font-semibold flex items-center gap-1 cursor-pointer"
+                                >
+                                    <Pencil class="size-2.5" />
+                                    <span>Edit</span>
+                                </button>
+                            {/if}
+                        </div>
                     </div>
-                    <textarea
-                        rows="4"
-                        bind:value={descDraft}
-                        onblur={commitDescription}
-                        placeholder="Add notes..."
-                        class="w-full ios-input p-3 text-xs text-white/90 placeholder:text-white/35 leading-relaxed resize-y"
-                    ></textarea>
+
+                    {#if isEditingDesc}
+                        <div class="space-y-1.5">
+                            <textarea
+                                bind:this={descTextareaEl}
+                                rows="7"
+                                bind:value={descDraft}
+                                onfocus={() => (descFocused = true)}
+                                oninput={() => (descDirty = true)}
+                                onblur={() => {
+                                    descFocused = false;
+                                    if (descDirty) {
+                                        void commitDescription(false);
+                                    }
+                                }}
+                                onkeydown={handleDescKeydown}
+                                placeholder="Write multi-line Markdown notes... (# Heading, **bold**, - [ ] checklist, ```code```)"
+                                class="w-full ios-input p-3 text-xs font-mono text-white/95 placeholder:text-white/35 leading-relaxed resize-y min-h-[150px]"
+                            ></textarea>
+                            <div
+                                class="flex items-center justify-between text-[10px] text-white/45 px-1"
+                            >
+                                <span>
+                                    Supports # Headings, **bold**, *italic*, - [
+                                    ] tasks, ```code```, links & multi-line
+                                    paragraphs
+                                </span>
+                                <span class="flex items-center gap-2 shrink-0">
+                                    <button
+                                        type="button"
+                                        onpointerdown={(e) =>
+                                            e.preventDefault()}
+                                        onclick={() =>
+                                            void commitDescription(true)}
+                                        class="text-primary hover:underline flex items-center gap-1 cursor-pointer"
+                                    >
+                                        <Eye class="size-3" />
+                                        <span>Save & Preview (⌘↵)</span>
+                                    </button>
+                                </span>
+                            </div>
+                        </div>
+                    {:else if renderedDescriptionHtml}
+                        <!-- svelte-ignore a11y_click_events_have_key_events -->
+                        <!-- svelte-ignore a11y_no_static_element_interactions -->
+                        <div
+                            bind:this={markdownPreviewEl}
+                            onclick={handlePreviewClick}
+                            ondblclick={enterDescEdit}
+                            title="Double-click to edit Markdown"
+                            class="ios-nested-surface p-3.5 rounded-2xl ios-markdown min-h-[72px]"
+                        >
+                            {@html renderedDescriptionHtml}
+                        </div>
+                    {:else}
+                        <button
+                            type="button"
+                            onclick={enterDescEdit}
+                            class="w-full text-left ios-nested-surface p-3.5 rounded-2xl text-xs text-white/40 hover:text-white/70 hover:bg-white/8 transition-colors cursor-pointer"
+                        >
+                            Click to add a Markdown description...
+                        </button>
+                    {/if}
                 </div>
 
                 <!-- Comments -->
@@ -447,11 +706,11 @@
                                             </span>
                                         {/if}
                                     </div>
-                                    <p
-                                        class="text-xs text-white/88 whitespace-pre-line"
-                                    >
-                                        {htmlToPlainText(c.comment)}
-                                    </p>
+                                    <div class="ios-markdown text-xs">
+                                        {@html renderMarkdownSafeHtml(
+                                            c.comment,
+                                        )}
+                                    </div>
                                 </div>
                             {/each}
                         </div>
@@ -459,14 +718,23 @@
 
                     <form
                         onsubmit={handlePostComment}
-                        class="flex items-center gap-2"
+                        class="flex items-end gap-2"
                     >
-                        <input
-                            type="text"
+                        <textarea
+                            rows="2"
                             bind:value={commentDraft}
-                            placeholder="Write a comment..."
-                            class="flex-1 ios-input px-3 py-2 text-xs text-white placeholder:text-white/35"
-                        />
+                            onkeydown={(e) => {
+                                if (
+                                    (e.metaKey || e.ctrlKey) &&
+                                    e.key === "Enter"
+                                ) {
+                                    e.preventDefault();
+                                    e.currentTarget.form?.requestSubmit();
+                                }
+                            }}
+                            placeholder="Write a Markdown comment... (⌘↵ to send)"
+                            class="flex-1 ios-input px-3 py-2 text-xs text-white placeholder:text-white/35 resize-none"
+                        ></textarea>
                         <button
                             type="submit"
                             class="size-8 rounded-full bg-primary text-white flex items-center justify-center shrink-0 hover:brightness-110 cursor-pointer"
